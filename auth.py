@@ -5,8 +5,8 @@ Dashboard 自身的登录保护：HTTP Basic Auth + 按 IP 的暴力破解锁定
 调用所有面板 API 的凭证，所以哪怕是个人自用也不能裸奔——至少要有登录门槛，
 并且防止别人对着登录框无限重试密码。
 """
-import time
 import threading
+import time
 
 
 class BruteForceGuard:
@@ -43,9 +43,19 @@ class BruteForceGuard:
             self._lockouts.pop(ip, None)
 
 
-def get_client_ip(request) -> str:
-    """优先信任反代传来的 X-Forwarded-For（如果你在前面加了 Nginx/Caddy 做 HTTPS 终止）。"""
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.remote_addr or "unknown"
+def get_client_ip(request, trusted_proxies=frozenset({"127.0.0.1", "::1"})) -> str:
+    """Return the client IP, accepting forwarding headers only from a trusted proxy.
+
+    A public client can send arbitrary ``X-Forwarded-For`` headers.  When the
+    app is behind a local reverse proxy, that proxy appends the actual peer IP
+    to the right of the list, so use the rightmost entry rather than attacker
+    controlled values on the left.
+    """
+    remote_addr = request.remote_addr or "unknown"
+    if remote_addr in trusted_proxies:
+        xff = request.headers.get("X-Forwarded-For")
+        if xff:
+            forwarded = [value.strip() for value in xff.split(",") if value.strip()]
+            if forwarded:
+                return forwarded[-1]
+    return remote_addr

@@ -13,7 +13,6 @@ import queue
 import secrets
 import threading
 import time
-import yaml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context, session, redirect, url_for
@@ -27,6 +26,7 @@ from auth import BruteForceGuard, get_client_ip
 from config_editor import redact_for_display, merge_submitted
 from agent_deploy import deploy_agent, AgentDeployError
 import agent_hosts
+from config_store import load_yaml, save_yaml, update_yaml
 import metrics_store
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -62,8 +62,7 @@ def load_config():
         raise RuntimeError(
             f"未找到配置文件 {CONFIG_PATH}，请先复制 config.example.yaml 为 config.yaml 并填写面板信息"
         )
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    return load_yaml(CONFIG_PATH)
 
 
 def load_panels():
@@ -71,8 +70,12 @@ def load_panels():
 
 
 def save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+    save_yaml(CONFIG_PATH, cfg)
+
+
+def update_config(mutator):
+    """Apply a read-modify-write configuration change under one process lock."""
+    return update_yaml(CONFIG_PATH, mutator)
 
 
 def ensure_session_secret():
@@ -81,15 +84,16 @@ def ensure_session_secret():
     这样多进程(gunicorn 多 worker)部署时大家读到的是同一个值，重启也不会互相把对方的 session 弄失效。
     config.yaml 还不存在（第一次运行、还没走完配置向导）时用一个临时的随机值顶着。
     """
-    try:
-        cfg = load_config()
-    except RuntimeError:
+    if not os.path.exists(CONFIG_PATH):
         return secrets.token_hex(32)
-    da = cfg.setdefault("dashboard_auth", {})
-    if not da.get("session_secret"):
-        da["session_secret"] = secrets.token_hex(32)
-        save_config(cfg)
-    return da["session_secret"]
+
+    def ensure(cfg):
+        da = cfg.setdefault("dashboard_auth", {})
+        if not da.get("session_secret"):
+            da["session_secret"] = secrets.token_hex(32)
+        return da["session_secret"]
+
+    return update_config(ensure)
 
 
 app.secret_key = ensure_session_secret()
@@ -192,11 +196,11 @@ def webauthn_register_verify():
     except Exception as e:
         return jsonify({"error": f"验证失败：{e}"}), 400
 
-    cfg = load_config()
-    da = cfg.setdefault("dashboard_auth", {})
-    passkeys = da.setdefault("passkeys", [])
-    passkeys.append({**record, "name": name, "created_at": time.time()})
-    save_config(cfg)
+    def add_passkey(cfg):
+        da = cfg.setdefault("dashboard_auth", {})
+        da.setdefault("passkeys", []).append({**record, "name": name, "created_at": time.time()})
+
+    update_config(add_passkey)
     return jsonify({"ok": True})
 
 
@@ -212,14 +216,15 @@ def webauthn_list_passkeys():
 
 @app.route("/api/webauthn/passkeys/<credential_id>", methods=["DELETE"])
 def webauthn_delete_passkey(credential_id):
-    cfg = load_config()
-    da = cfg.setdefault("dashboard_auth", {})
-    passkeys = da.get("passkeys") or []
-    remaining = [p for p in passkeys if p.get("credential_id") != credential_id]
-    if len(remaining) == len(passkeys):
+    def delete_passkey(cfg):
+        da = cfg.setdefault("dashboard_auth", {})
+        passkeys = da.get("passkeys") or []
+        remaining = [p for p in passkeys if p.get("credential_id") != credential_id]
+        da["passkeys"] = remaining
+        return len(remaining) != len(passkeys)
+
+    if not update_config(delete_passkey):
         return jsonify({"error": "未找到该 Passkey"}), 404
-    da["passkeys"] = remaining
-    save_config(cfg)
     return jsonify({"ok": True})
 
 
@@ -277,8 +282,14 @@ def webauthn_login_verify():
         _brute_force_guard.record_failure(ip)
         return jsonify({"error": "验证失败"}), 401
 
-    stored["sign_count"] = new_sign_count
-    save_config(cfg)
+    credential_id = stored["credential_id"]
+
+    def update_sign_count(current_cfg):
+        current = wam.find_passkey(current_cfg.get("dashboard_auth", {}).get("passkeys") or [], credential_id)
+        if current:
+            current["sign_count"] = new_sign_count
+
+    update_config(update_sign_count)
     _brute_force_guard.record_success(ip)
     session.clear()
     session["authed"] = True
@@ -481,15 +492,18 @@ def api_get_config():
 
 @app.route("/api/config", methods=["POST"])
 def api_save_config():
-    try:
-        old_cfg = load_config()
-    except RuntimeError:
-        old_cfg = {}
     submitted = request.get_json(silent=True) or {}
-    merged, errors = merge_submitted(old_cfg, submitted)
+
+    def merge_and_save(old_cfg):
+        merged, errors = merge_submitted(old_cfg, submitted)
+        if not errors:
+            old_cfg.clear()
+            old_cfg.update(merged)
+        return errors
+
+    errors = update_config(merge_and_save)
     if errors:
         return jsonify({"errors": errors}), 400
-    save_config(merged)
     _cache["data"] = None  # 配置变了，强制下次 /api/status 重新拉取而不是用旧缓存
     return jsonify({"ok": True})
 
@@ -534,16 +548,14 @@ def _deploy_and_report(ip, port, ssh_user, password, remember, panel_name_overri
     而不是攒到最后一次性甩一大段。SSH 部署本身在后台线程里跑，主线程负责把
     队列里的日志行 yield 出去，deploy_agent() 结束后队列收到 "done" 哨兵才收尾。
     """
-    try:
-        cfg = load_config()
-    except RuntimeError:
+    if not os.path.exists(CONFIG_PATH):
         return jsonify({"error": "还没有 config.yaml，先在设置页保存至少一台面板"}), 400
 
-    if _ensure_metrics_agent_secret(cfg):
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+    def ensure_metrics_agent_secret(cfg):
+        _ensure_metrics_agent_secret(cfg)
+        return dict(cfg.get("metrics_agent", {}))
 
-    ma_cfg = cfg.get("metrics_agent", {})
+    ma_cfg = update_config(ensure_metrics_agent_secret)
     report_url_override = (ma_cfg.get("report_url") or "").rstrip("/")
     if report_url_override:
         report_url = report_url_override + METRICS_REPORT_PATH
@@ -726,11 +738,16 @@ def background_metrics_prune_loop():
         time.sleep(METRICS_PRUNE_INTERVAL)
 
 
-if __name__ == "__main__":
+def start_background_workers():
+    """Start both periodic jobs for the single-process development server."""
     t = threading.Thread(target=background_alert_loop, daemon=True)
     t.start()
     t2 = threading.Thread(target=background_metrics_prune_loop, daemon=True)
     t2.start()
+
+
+if __name__ == "__main__":
+    start_background_workers()
     debug = os.environ.get("FLASK_DEBUG") == "1"
     port = int(os.environ.get("PORT", 1810))
     app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False, threaded=True)

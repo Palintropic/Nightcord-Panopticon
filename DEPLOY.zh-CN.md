@@ -177,14 +177,13 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-> 注意：`app.py` 里的后台告警巡检线程是在 `if __name__ == "__main__"` 里启动的，
-> gunicorn 不会经过这个入口。如果用 gunicorn（推荐，性能更好），告警巡检需要单独起一个进程：
+> 注意：Gunicorn 只提供 Web 服务；后台告警巡检需要单独起一个不监听 HTTP 端口的 worker：
 > ```ini
-> # 再建一个 nightcord-panopticon-alerts.service，ExecStart 换成：
-> ExecStart=/path/to/nightcord-panopticon/.venv/bin/python app.py
+> # 再建一个 nightcord-panopticon-alerts.service：
+> ExecStart=/path/to/nightcord-panopticon/.venv/bin/python worker.py
 > ```
-> 或者简单点，生产环境也直接用 `python app.py`（Flask 自带服务器 + 后台线程一起跑），
-> 个人项目流量小，够用；真要追求性能再切 gunicorn + 独立告警进程。
+> `worker.py` 不会绑定 1810，因此能与 Gunicorn 同时运行。个人项目若直接用 `python app.py`，
+> Web 服务和后台线程会一起启动，不需要额外 worker。
 
 ```bash
 systemctl daemon-reload
@@ -203,7 +202,8 @@ server {
     location / {
         proxy_pass http://127.0.0.1:1810;
         proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # 覆盖客户端自行伪造的 X-Forwarded-For，应用只信任 Nginx 注入的真实来源地址。
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }

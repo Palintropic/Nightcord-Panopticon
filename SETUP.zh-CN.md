@@ -102,8 +102,8 @@ gunicorn -w 2 -b 127.0.0.1:1810 app:app
 用 systemd 管理进程、Nginx 反代 + Let's Encrypt 签 HTTPS 的完整示例配置见
 [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) 第三步。
 
-> 注意：后台告警巡检线程是在 `python app.py` 的入口里启动的，用 gunicorn 时不会经过这个入口，
-> 如果要用告警功能又想用 gunicorn，需要单独再起一个 `python app.py` 进程负责巡检
+> 注意：Gunicorn 只提供 HTTP 服务。要同时使用 Gunicorn 和告警功能，请另起一个 `python worker.py`
+> 服务；它只跑巡检任务，不会再绑定 HTTP 端口。
 > （细节同样在 DEPLOY.zh-CN.md 里）。
 
 ## 常见问题

@@ -214,7 +214,7 @@ function addPanelRow(p){
 }
 
 function escapeAttr(s){
-  return (s||'').replace(/"/g, '&quot;');
+  return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 function base64urlToBuffer(base64url){
@@ -245,11 +245,14 @@ async function loadPasskeys(){
   }
   list.forEach(p => {
     const date = p.created_at ? new Date(p.created_at * 1000).toLocaleString() : '';
-    el.insertAdjacentHTML('beforeend', `<div class="panel-card">
-      <button class="remove" onclick="deletePasskey('${p.credential_id}')">删除</button>
+    el.insertAdjacentHTML('beforeend', `<div class="panel-card" data-passkey-id="${escapeAttr(p.credential_id)}">
+      <button class="remove passkey-delete">删除</button>
       <div>${escapeAttr(p.name)}</div>
       <div class="hint">添加于 ${date}</div>
     </div>`);
+  });
+  el.querySelectorAll('.passkey-delete').forEach(button => {
+    button.onclick = () => deletePasskey(button.closest('[data-passkey-id]').dataset.passkeyId);
   });
 }
 
@@ -434,7 +437,7 @@ async function loadAgentHosts(){
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
         <div style="font-size:13px">
           <strong>${escapeAttr(h.panel_name || h.ip)}</strong><br>
-          <span class="hint">${escapeAttr(h.ssh_user)}@${escapeAttr(h.ip)}:${h.port}</span>
+          <span class="hint">${escapeAttr(h.ssh_user)}@${escapeAttr(h.ip)}:${escapeAttr(h.port)}</span>
         </div>
         <div style="display:flex;gap:8px">
           <button class="redeploy-btn">重新安装</button>

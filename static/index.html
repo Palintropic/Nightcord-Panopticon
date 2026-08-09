@@ -93,8 +93,8 @@ function renderSystem(sys, net, qingyuan){
   if(!sys && !net && !qingyuan) return '<div class="err">无数据</div>';
   let html = '';
   if(sys){
-    html += `<div class="row"><span class="k">系统</span><span>${sys.system ?? '-'}</span></div>`;
-    html += `<div class="row"><span class="k">运行时长</span><span>${sys.time ?? '-'}</span></div>`;
+    html += `<div class="row"><span class="k">系统</span><span>${escapeHtml(sys.system ?? '-')}</span></div>`;
+    html += `<div class="row"><span class="k">运行时长</span><span>${escapeHtml(sys.time ?? '-')}</span></div>`;
   }
   // 青源 agent 是本机直采，比宝塔面板 API 转发的数据更实时，两边都有时优先用青源的 CPU/内存
   if(qingyuan && qingyuan.cpu !== undefined && qingyuan.cpu !== null){
@@ -121,10 +121,10 @@ function renderSystem(sys, net, qingyuan){
   }
   if(net && net.load){
     const l = net.load;
-    html += `<div class="row"><span class="k">负载 (1/5/15)</span><span>${l.one} / ${l.five} / ${l.fifteen}</span></div>`;
+    html += `<div class="row"><span class="k">负载 (1/5/15)</span><span>${escapeHtml(l.one)} / ${escapeHtml(l.five)} / ${escapeHtml(l.fifteen)}</span></div>`;
   }
   if(net){
-    html += `<div class="row"><span class="k">网络 ↑/↓</span><span>${fmtBytes(net.up*1024)}/s ↑ &nbsp; ${fmtBytes(net.down*1024)}/s ↓</span></div>`;
+    html += `<div class="row"><span class="k">网络 ↑/↓</span><span>${escapeHtml(fmtBytes(net.up*1024))}/s ↑ &nbsp; ${escapeHtml(fmtBytes(net.down*1024))}/s ↓</span></div>`;
   }
   return html || '<div class="err">无数据</div>';
 }
@@ -135,8 +135,8 @@ function renderIp(p, qingyuan){
   const int_ = qingyuan && qingyuan.ip_internal;
   if(!ext && !int_) return '';
   const parts = [];
-  if(ext) parts.push(`${ext}(外)`);
-  if(int_) parts.push(`${int_}(内)`);
+  if(ext) parts.push(`${escapeHtml(ext)}(外)`);
+  if(int_) parts.push(`${escapeHtml(int_)}(内)`);
   return `<div class="row"><span class="k">IP 地址</span><span>${parts.join(' ')}</span></div>`;
 }
 
@@ -168,8 +168,8 @@ function renderDisk(disk, qingyuanDetail){
 
   if(!rows.length) return '<div class="err">无数据</div>';
   return '<table>' + rows.map(r =>
-    `<tr><td>${r.path}</td><td>${r.usedTotal}</td>
-      <td><span class="badge ${r.percent>=85?'bad':'ok'}">${r.label}</span></td></tr>`
+    `<tr><td>${escapeHtml(r.path)}</td><td>${escapeHtml(r.usedTotal)}</td>
+      <td><span class="badge ${r.percent>=85?'bad':'ok'}">${escapeHtml(r.label)}</span></td></tr>`
   ).join('') + '</table>';
 }
 
@@ -183,7 +183,7 @@ function renderSites(sites){
     const status = (s.status === '1' || s.status === 1 || s.status === true) ? 'ok' : 'bad';
     const statusText = status === 'ok' ? '运行中' : (s.status ?? '未知');
     const edate = s.edate || s.expire || '';
-    html += `<tr><td>${name}</td><td><span class="badge ${status}">${statusText}</span></td><td>${edate}</td></tr>`;
+    html += `<tr><td>${escapeHtml(name)}</td><td><span class="badge ${status}">${escapeHtml(statusText)}</span></td><td>${escapeHtml(edate)}</td></tr>`;
   });
   html += '</table>';
   if(list.length > 8) html += `<div class="row"><span class="k"></span><span>… 共 ${list.length} 个站点</span></div>`;
@@ -244,7 +244,7 @@ function metricsRangeSelect(panelName){
   const current = metricsRangeState[panelName] ?? 6;
   const opts = METRICS_RANGE_OPTIONS.map(o=>
     `<option value="${o.hours}" ${o.hours===current?'selected':''}>${o.label}</option>`).join('');
-  return `<select onchange="onMetricsRangeChange('${panelName.replace(/'/g,"\\'")}', this.value)"
+  return `<select class="metrics-range" data-panel="${escapeAttr(panelName)}"
     style="font-size:11px;background:#0c0e13;color:var(--text);border:1px solid var(--border);border-radius:4px">
     ${opts}
   </select>`;
@@ -285,7 +285,7 @@ function renderNightcordStatus(p){
   targets.forEach(t=>{
     const label = labelMap[t.status] || t.status;
     const badge = badgeMap[t.status] || 'warn';
-    html += `<tr><td>${escapeHtml(t.display_name||t.id)}</td><td><span class="badge ${badge}">${label}</span></td></tr>`;
+    html += `<tr><td>${escapeHtml(t.display_name||t.id)}</td><td><span class="badge ${badge}">${escapeHtml(label)}</span></td></tr>`;
   });
   html += '</table>';
   return html;
@@ -313,7 +313,7 @@ function renderCard(p, idx){
         : null);
   let body = '';
   if(!online){
-    body += `<div class="err">${p.error || (p.kind === 'qingyuan-only' ? '青源 agent 已超过 3 分钟没有上报' : '无法连接该面板')}</div>`;
+    body += `<div class="err">${escapeHtml(p.error || (p.kind === 'qingyuan-only' ? '青源 agent 已超过 3 分钟没有上报' : '无法连接该面板'))}</div>`;
   }
   if(p.kind === 'nightcord-status'){
     body += `<div class="section-title">监控目标</div>${renderNightcordStatus(p)}`;
@@ -333,16 +333,20 @@ function renderCard(p, idx){
   }
   body += `<details><summary>查看原始数据</summary><pre>${escapeHtml(JSON.stringify(p, null, 2))}</pre></details>`;
   return `<div class="card" style="--accent-color:${member.color}">
-    <h2><span class="dot ${dot}"></span>${p.name || '未命名面板'}
+    <h2><span class="dot ${dot}"></span>${escapeHtml(p.name || '未命名面板')}
       <span style="margin-left:auto;font-size:10px;color:${member.color};font-weight:400">♪ ${member.name}</span>
     </h2>
-    <div class="url">${p.url || (p.kind === 'qingyuan-only' ? '仅青源 agent，未配置宝塔面板' : '')}</div>
+    <div class="url">${escapeHtml(p.url || (p.kind === 'qingyuan-only' ? '仅青源 agent，未配置宝塔面板' : ''))}</div>
     ${body}
   </div>`;
 }
 
 function escapeHtml(s){
-  return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function escapeAttr(s){
+  return escapeHtml(s);
 }
 
 async function logout(){
@@ -370,6 +374,9 @@ async function refresh(){
     }
     empty.style.display = 'none';
     grid.innerHTML = panels.map((p, i) => renderCard(p, i)).join('');
+    grid.querySelectorAll('.metrics-range').forEach(select => {
+      select.addEventListener('change', () => onMetricsRangeChange(select.dataset.panel, select.value));
+    });
     panels.forEach(p => {
       if(p.kind !== 'nightcord-status' && p.name) loadMetricsHistory(p.name);
     });

@@ -95,7 +95,7 @@ gunicorn -w 2 -b 127.0.0.1:1810 app:app
 
 A full example with systemd process management and Nginx + Let's Encrypt HTTPS is in step 3 of [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese, but the commands are copy-pasteable).
 
-> Note: the background alert-checking thread starts from `python app.py`'s entry point, which gunicorn doesn't go through. If you want both gunicorn and alerting, run a second `python app.py` process just for the background loop (also covered in DEPLOY.zh-CN.md).
+> Note: Gunicorn only serves HTTP. If you want both Gunicorn and alerting, run `python worker.py` as a second service; it runs the periodic jobs without binding another HTTP port (also covered in DEPLOY.zh-CN.md).
 
 ## FAQ
 

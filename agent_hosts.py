@@ -8,8 +8,9 @@
 import os
 import time
 
-import yaml
 from cryptography.fernet import Fernet, InvalidToken
+
+from config_store import load_yaml, save_yaml, update_yaml
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 KEY_PATH = os.path.join(BASE_DIR, "agent_hosts.key")
@@ -32,15 +33,11 @@ def _host_id(ip, port):
 
 
 def _load(config_path):
-    if not os.path.exists(config_path):
-        return {}
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    return load_yaml(config_path)
 
 
 def _dump(config_path, cfg):
-    with open(config_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+    save_yaml(config_path, cfg)
 
 
 def list_hosts(cfg):
@@ -72,24 +69,28 @@ def get_host_credentials(cfg, host_id):
 
 
 def save_host(config_path, ip, port, ssh_user, password, panel_name):
-    cfg = _load(config_path)
-    hosts = cfg.setdefault("agent_hosts", [])
-    hid = _host_id(ip, port)
-    hosts[:] = [h for h in hosts if _host_id(h["ip"], h["port"]) != hid]
-    hosts.append({
-        "ip": ip,
-        "port": port,
-        "ssh_user": ssh_user,
-        "password_enc": _get_fernet().encrypt(password.encode()).decode(),
-        "panel_name": panel_name,
-        "last_deployed_ts": int(time.time()),
-    })
-    _dump(config_path, cfg)
+    encrypted_password = _get_fernet().encrypt(password.encode()).decode()
+
+    def update(cfg):
+        hosts = cfg.setdefault("agent_hosts", [])
+        hid = _host_id(ip, port)
+        hosts[:] = [h for h in hosts if _host_id(h["ip"], h["port"]) != hid]
+        hosts.append({
+            "ip": ip,
+            "port": port,
+            "ssh_user": ssh_user,
+            "password_enc": encrypted_password,
+            "panel_name": panel_name,
+            "last_deployed_ts": int(time.time()),
+        })
+
+    update_yaml(config_path, update)
 
 
 def delete_host(config_path, host_id):
-    cfg = _load(config_path)
-    hosts = cfg.get("agent_hosts", []) or []
-    hosts[:] = [h for h in hosts if _host_id(h["ip"], h["port"]) != host_id]
-    cfg["agent_hosts"] = hosts
-    _dump(config_path, cfg)
+    def update(cfg):
+        hosts = cfg.get("agent_hosts", []) or []
+        hosts[:] = [h for h in hosts if _host_id(h["ip"], h["port"]) != host_id]
+        cfg["agent_hosts"] = hosts
+
+    update_yaml(config_path, update)
