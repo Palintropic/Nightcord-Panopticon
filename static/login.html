@@ -31,11 +31,16 @@
   #msg{font-size:12px;margin-top:12px;min-height:16px}
   #msg.err{color:var(--bad)} #msg.ok{color:var(--ok)}
 </style>
+<link rel="stylesheet" href="/static/theme.css">
 </head>
-<body>
+<body class="login-page">
 <div class="box">
-  <h1>25:00</h1>
-  <div class="sub">Nightcord Panopticon · 请登录</div>
+  <div class="login-brand">
+    <div class="brand-mark">25</div>
+    <div class="eyebrow">nightcord / panopticon</div>
+    <h1>回到监控台</h1>
+    <div class="sub">使用 Passkey 或账户密码继续</div>
+  </div>
 
   <button class="primary" id="passkeyBtn" onclick="loginWithPasskey()">🔑 使用 Passkey 登录</button>
 

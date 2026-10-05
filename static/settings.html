@@ -47,11 +47,18 @@
   .hint{color:var(--muted);font-size:11px;margin-top:4px}
   footer{padding:24px 28px;text-align:center;color:var(--muted);font-size:11px}
 </style>
+<link rel="stylesheet" href="/static/theme.css">
 </head>
-<body>
-<header>
-  <h1>⚙ 设置</h1>
-  <a href="/">← 返回 Dashboard</a>
+<body class="settings-page">
+<header class="topbar compact">
+  <div class="brand">
+    <div class="brand-mark">25</div>
+    <div class="brand-copy">
+      <div class="eyebrow">configuration</div>
+      <h1>系统设置 <span>/ Panopticon</span></h1>
+    </div>
+  </div>
+  <a class="icon-link" href="/"><span>←</span><span class="link-label">返回监控台</span></a>
 </header>
 <main>
   <div class="banner" id="oobeBanner" style="display:none">
@@ -188,7 +195,7 @@
     <span id="msg"></span>
   </div>
 </main>
-<footer>25:00 — 设置也要好好收拾。 · Nightcord Series</footer>
+<footer class="page-footer">25:00 — 设置也要好好收拾。 · Nightcord Series</footer>
 
 <script>
 const SECRET_PLACEHOLDER = '••••••••';

@@ -48,22 +48,41 @@
   header .tagline{font-size:11px;color:var(--muted);margin-top:2px;font-style:italic}
   footer{padding:24px 28px;text-align:center;color:var(--muted);font-size:11px;border-top:1px solid var(--border);margin-top:12px}
 </style>
+<link rel="stylesheet" href="/static/theme.css">
 </head>
-<body>
-<header>
-  <div>
-    <h1>25時、ナイトコードで。 <span style="color:var(--muted);font-weight:400">/ Panopticon</span></h1>
-    <div class="tagline">正体不明の音楽サークル、今夜も稼働状況を見守る。</div>
+<body class="dashboard-page">
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">25</div>
+    <div class="brand-copy">
+      <div class="eyebrow">nightcord / panopticon</div>
+      <h1>25時、ナイトコードで。 <span>/ Panopticon</span></h1>
+      <div class="tagline">今夜も稼働状況を見守る。</div>
+    </div>
   </div>
-  <div style="text-align:right">
-    <div class="meta" id="updated">加载中…</div>
-    <a href="/settings" style="font-size:11px;color:var(--muted)">⚙ 设置</a>
-    <a href="#" onclick="logout();return false" style="font-size:11px;color:var(--muted);margin-left:10px">⎋ 退出登录</a>
+  <div class="topbar-actions">
+    <div class="refresh-meta" id="updated">正在同步节点状态…</div>
+    <a class="icon-link" href="/settings"><span>⌁</span><span class="link-label">设置</span></a>
+    <a class="icon-link" href="#" onclick="logout();return false"><span>↗</span><span class="link-label">退出</span></a>
   </div>
 </header>
-<div id="grid"></div>
-<div id="empty" style="display:none">还没配置任何面板，去 <a href="/settings" style="color:var(--accent)">设置页面</a> 添加一个吧。</div>
-<footer>25:00 — サーバーの向こう側、今日も奏でる。 · Nightcord Series</footer>
+<main class="dashboard-shell">
+  <section class="overview" aria-label="节点总览">
+    <div class="overview-copy">
+      <div class="eyebrow">overview / 15 sec refresh</div>
+      <h2>稼働状況</h2>
+      <p>宝塔面板、青源 Agent 与独立监控节点</p>
+    </div>
+    <div class="overview-stats">
+      <div class="stat-card"><span class="stat-label">节点总数</span><strong class="stat-value" id="summaryTotal">—</strong></div>
+      <div class="stat-card"><span class="stat-label">正常在线</span><strong class="stat-value ok" id="summaryOnline">—</strong></div>
+      <div class="stat-card"><span class="stat-label">需要关注</span><strong class="stat-value" id="summaryAlert">—</strong></div>
+    </div>
+  </section>
+  <div id="grid"></div>
+  <div id="empty" style="display:none">还没配置任何面板，去 <a href="/settings" style="color:var(--accent)">设置页面</a> 添加一个吧。</div>
+</main>
+<footer class="page-footer">25:00 — サーバーの向こう側、今日も奏でる。 · Nightcord Series</footer>
 
 <script>
 const REFRESH_MS = 15000;
@@ -90,7 +109,7 @@ function barClass(p){
 const QY_TAG = '<span style="color:var(--muted);font-size:10px;margin-left:4px">青源实时</span>';
 
 function renderSystem(sys, net, qingyuan){
-  if(!sys && !net && !qingyuan) return '<div class="err">无数据</div>';
+  if(!sys && !net && !qingyuan) return '<div class="empty-state">暂无系统数据</div>';
   let html = '';
   if(sys){
     html += `<div class="row"><span class="k">系统</span><span>${sys.system ?? '-'}</span></div>`;
@@ -126,7 +145,7 @@ function renderSystem(sys, net, qingyuan){
   if(net){
     html += `<div class="row"><span class="k">网络 ↑/↓</span><span>${fmtBytes(net.up*1024)}/s ↑ &nbsp; ${fmtBytes(net.down*1024)}/s ↓</span></div>`;
   }
-  return html || '<div class="err">无数据</div>';
+  return html || '<div class="empty-state">暂无系统数据</div>';
 }
 
 function renderIp(p, qingyuan){
@@ -166,7 +185,7 @@ function renderDisk(disk, qingyuanDetail){
       percent: qy.percent, label: `${qy.percent.toFixed(1)}%${QY_TAG}`});
   });
 
-  if(!rows.length) return '<div class="err">无数据</div>';
+  if(!rows.length) return '<div class="empty-state">暂无磁盘数据</div>';
   return '<table>' + rows.map(r =>
     `<tr><td>${r.path}</td><td>${r.usedTotal}</td>
       <td><span class="badge ${r.percent>=85?'bad':'ok'}">${r.label}</span></td></tr>`
@@ -175,7 +194,7 @@ function renderDisk(disk, qingyuanDetail){
 
 function renderSites(sites){
   const list = (sites && sites.data) || (Array.isArray(sites) ? sites : null);
-  if(!list) return '<div class="err">无数据</div>';
+  if(!list) return '<div class="empty-state">暂无网站数据</div>';
   if(!list.length) return '<div class="row"><span class="k">站点数</span><span>0</span></div>';
   let html = `<div class="row"><span class="k">站点总数</span><span>${list.length}</span></div><table>`;
   list.slice(0,8).forEach(s=>{
@@ -192,7 +211,7 @@ function renderSites(sites){
 
 function renderDatabases(dbs){
   const list = (dbs && dbs.data) || (Array.isArray(dbs) ? dbs : null);
-  if(!list) return '<div class="err">无数据</div>';
+  if(!list) return '<div class="empty-state">暂无数据库数据</div>';
   return `<div class="row"><span class="k">数据库总数</span><span>${list.length}</span></div>`;
 }
 
@@ -224,8 +243,7 @@ function metricsSvg(samples){
     const pts = samples.map(s => `${x(s.ts).toFixed(1)},${y(s[k]).toFixed(1)}`).join(' ');
     return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
   }).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none"
-    style="background:#0c0e13;border-radius:6px;display:block">${lines}</svg>`;
+  return `<svg class="metrics-chart" viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none">${lines}</svg>`;
 }
 
 function metricsLegend(last){
@@ -313,9 +331,16 @@ function renderCard(p, idx){
         : null);
   let body = '';
   if(!online){
-    body += `<div class="err">${p.error || (p.kind === 'qingyuan-only' ? '青源 agent 已超过 3 分钟没有上报' : '无法连接该面板')}</div>`;
+    const errorMessage = p.error || (p.kind === 'qingyuan-only' ? '青源 agent 已超过 3 分钟没有上报' : '无法连接该面板');
+    body += `<div class="status-callout">
+      <div class="status-callout-icon">!</div>
+      <div><strong>节点连接异常</strong><span>暂时无法取得完整数据，请检查网络或面板状态</span></div>
+    </div>
+    <details class="error-detail"><summary>查看技术详情</summary><pre>${escapeHtml(errorMessage)}</pre></details>`;
   }
-  if(p.kind === 'nightcord-status'){
+  if(!online && !qingyuan){
+    body += renderIp(p, qingyuan);
+  } else if(p.kind === 'nightcord-status'){
     body += `<div class="section-title">监控目标</div>${renderNightcordStatus(p)}`;
   } else if(p.kind === 'qingyuan-only'){
     // 只装了青源、没配对应宝塔面板的机器：没有 sites/databases 这些宝塔才有的数据，卡片简化展示
@@ -331,14 +356,18 @@ function renderCard(p, idx){
     body += `<div class="section-title">数据库</div>${renderDatabases(p.databases)}`;
     body += `<div id="mtx-${metricsSlug(p.name || '')}"></div>`;
   }
-  body += `<details><summary>查看原始数据</summary><pre>${escapeHtml(JSON.stringify(p, null, 2))}</pre></details>`;
-  return `<div class="card" style="--accent-color:${member.color}">
-    <h2><span class="dot ${dot}"></span>${p.name || '未命名面板'}
-      <span style="margin-left:auto;font-size:10px;color:${member.color};font-weight:400">♪ ${member.name}</span>
-    </h2>
-    <div class="url">${p.url || (p.kind === 'qingyuan-only' ? '仅青源 agent，未配置宝塔面板' : '')}</div>
+  body += `<details class="raw-data"><summary>查看原始数据</summary><pre>${escapeHtml(JSON.stringify(p, null, 2))}</pre></details>`;
+  return `<article class="card" style="--accent-color:${member.color}">
+    <div class="card-head">
+      <span class="status-orb ${dot}" aria-label="${online ? '在线' : '异常'}"></span>
+      <div class="card-title-wrap">
+        <h2>${p.name || '未命名面板'}</h2>
+        <div class="url">${p.url || (p.kind === 'qingyuan-only' ? '仅青源 agent，未配置宝塔面板' : '')}</div>
+      </div>
+      <span class="member-chip">♪ ${member.name}</span>
+    </div>
     ${body}
-  </div>`;
+  </article>`;
 }
 
 function escapeHtml(s){
@@ -363,6 +392,13 @@ async function refresh(){
       return;
     }
     const panels = data.panels || [];
+    const onlineCount = panels.filter(p => p.online !== false).length;
+    const alertCount = panels.length - onlineCount;
+    document.getElementById('summaryTotal').textContent = panels.length;
+    document.getElementById('summaryOnline').textContent = onlineCount;
+    const alertEl = document.getElementById('summaryAlert');
+    alertEl.textContent = alertCount;
+    alertEl.className = 'stat-value ' + (alertCount ? 'bad' : 'ok');
     if(!panels.length){
       grid.innerHTML = '';
       empty.style.display = 'block';
