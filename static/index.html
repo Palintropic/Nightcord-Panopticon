@@ -146,10 +146,15 @@ function liveQingyuan(p){
   return q;
 }
 function isOffline(p){ return p.online === false || (p.qingyuan && p.qingyuan.online === false); }
-// No usable numbers at all: the card's own source is down. A BT card whose attached agent went quiet
-// still has BT's numbers; it shows them, flagged with the agent being offline.
-function noMetrics(p){ return p.online === false || (p.kind === 'qingyuan-only' && p.qingyuan && p.qingyuan.online === false); }
-function agentOnlyOffline(p){ return !noMetrics(p) && p.qingyuan && p.qingyuan.online === false; }
+// No usable numbers: an agent-only machine that stopped reporting (its numbers are stale), or a card
+// where no source produced any number at all. A BT card with a failed endpoint, or whose attached
+// agent went quiet, still shows whatever numbers it has, flagged with what is wrong.
+function noMetrics(p){
+  if(p.kind === 'qingyuan-only') return !!(p.qingyuan && p.qingyuan.online === false);
+  const m = machineMetrics(p);
+  return [m.cpu, m.mem, m.disk].every(v => v === undefined || v === null);
+}
+
 
 function diskRows(p){
   const q = liveQingyuan(p);
@@ -329,8 +334,12 @@ function stateText(p){
     const down = (p.targets || []).filter(t => t.status === 'down').length;
     return p.online === false ? '无法连接' : (down ? `${down} 个目标故障` : `${(p.targets || []).length} 个目标`);
   }
-  if(agentOnlyOffline(p)) return `青源离线 · ${fmtAgo(p.qingyuan.seen_at)}`;
-  return isOffline(p) ? `离线 · ${fmtAgo(p.qingyuan && p.qingyuan.seen_at)}` : '';
+  const q = p.qingyuan;
+  if(p.kind === 'qingyuan-only') return q && q.online === false ? `离线 · ${fmtAgo(q.seen_at)}` : '';
+  const flags = [];
+  if(p.online === false) flags.push('宝塔连接失败');
+  if(q && q.online === false) flags.push(`青源离线 · ${fmtAgo(q.seen_at)}`);
+  return flags.join(' · ');
 }
 
 function machinesView(){
@@ -402,7 +411,7 @@ function tile(p){
       <div class="readings">${front}</div>
       ${samples.length >= 2 ? sparkline(samples) : ''}
       <div class="tile-label"><span class="name">${name}</span>${offline ? ''
-        : `<span class="seen">${escapeHtml(agentOnlyOffline(p) ? stateText(p) : fmtAgo(seenAt))}</span>`}</div>
+        : `<span class="seen">${escapeHtml(isOffline(p) ? stateText(p) : fmtAgo(seenAt))}</span>`}</div>
     </div>
   </a>`;
 }
