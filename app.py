@@ -425,7 +425,10 @@ def _merge_qingyuan(results):
 
 def _thresholds():
     """前端磁贴变红用的阈值，跟告警巡检读同一份配置，看板上的红色和收到的告警永远一致。"""
-    th = (load_config().get("notifications") or {}).get("thresholds") or {}
+    try:
+        th = (load_config().get("notifications") or {}).get("thresholds") or {}
+    except RuntimeError:
+        th = {}  # 配置文件缺失：状态接口照常返回（缓存数据 + 默认阈值），不因为阈值变成 500
     return {"cpu": th.get("cpu", 90), "mem": th.get("mem", 90), "disk": th.get("disk", 85)}
 
 

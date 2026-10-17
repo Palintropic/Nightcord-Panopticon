@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/static/uwp.css">
 <style>
   /* Settings-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
-  .page{max-width:760px}
+  .page{max-width:760px}   /* by eye: same measure as the form grid */
   .page[hidden]{display:none}
   .panel-card{padding:12px 0;border-bottom:1px solid var(--SystemBaseLow)}
   .panel-card:last-child{border-bottom:0}
@@ -342,8 +342,11 @@ async function load(){
   (cfg.panels || []).forEach(p => addPanelRow(p));
 
   const da = cfg.dashboard_auth || {};
-  // First run = nothing configured yet: no password and no data source.
-  document.getElementById('oobeBanner').style.display = (!da.has_password && !(cfg.panels || []).length) ? 'block' : 'none';
+  // First run = nothing configured yet: no password and no data source (no BT panel, no agent
+  // has ever reported, Nightcord-Status off).
+  const agents = await fetch('/api/agents').then(r => r.ok ? r.json() : {agents: []}).catch(() => ({agents: []}));
+  const noSource = !(cfg.panels || []).length && !(agents.agents || []).length && !cfg.nightcord_status_enabled;
+  document.getElementById('oobeBanner').style.display = (!da.has_password && noSource) ? 'block' : 'none';
   document.getElementById('authEnabled').checked = !!da.enabled;
   document.getElementById('authUsername').value = da.username || '';
   document.getElementById('authMaxAttempts').value = da.max_attempts || 5;

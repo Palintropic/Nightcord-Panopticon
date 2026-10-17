@@ -141,6 +141,7 @@ button.status-item:hover,a.status-item:hover{background:rgb(255 255 255 / 0.12)}
 /* ── Text ── */
 .group{margin-top:var(--group-gap)}
 .group-header{font:var(--type-base);margin-bottom:var(--header-gap)}
+/* Prose: 24 leading and 720 measure are by eye (20 is too tight for CJK paragraphs, as PNS). */
 .description{font:var(--type-body);line-height:24px;color:var(--SystemBaseMediumHigh);max-width:720px;margin-bottom:var(--gutter)}
 .caption{font:var(--type-caption);color:var(--SystemBaseMedium)}
 .empty-hint{padding:var(--gutter) 0;color:var(--SystemBaseMedium)}
@@ -185,6 +186,7 @@ input:focus::placeholder{color:var(--SystemChromeHigh)}
 /* Control header above the field, 8 clear of it. */
 .field{display:flex;flex-direction:column;gap:var(--header-gap);margin-bottom:var(--gutter);font:var(--type-control)}
 .field-hint{font:var(--type-caption);color:var(--SystemBaseMedium)}
+/* Field columns 240 min and the 760 form width are by eye (readable line length on desktop). */
 .form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));column-gap:var(--group-gap);max-width:760px}
 
 /* CheckBox: 20 box, 2 stroke BaseMediumHigh; checked = accent fill with a white mark (mark by

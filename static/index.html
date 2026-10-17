@@ -177,10 +177,14 @@ function machineMetrics(p){
   const sys = p.system || {};
   const net = p.network || {};
   const cpu = q && q.cpu !== null && q.cpu !== undefined ? q.cpu : (sys.cpuRealUsed ?? sys.CpuRealUsed ?? (net.cpu ? net.cpu[0] : undefined));
-  const mem = q && q.mem !== null && q.mem !== undefined ? q.mem : pct(sys.MemRealUsed ?? sys.memRealUsed, sys.MemTotal ?? sys.memTotal);
+  const qyMem = q && q.mem !== null && q.mem !== undefined;
+  const memUsed = sys.MemRealUsed ?? sys.memRealUsed, memTotal = sys.MemTotal ?? sys.memTotal;
+  const mem = qyMem ? q.mem : pct(memUsed, memTotal);
+  // BT reports absolute memory; keep "used / total" next to the percentage when that is the source.
+  const memText = !qyMem && memUsed !== undefined && memTotal ? `${memUsed}G / ${memTotal}G` : null;
   const disks = diskRows(p);
   const disk = disks.length ? Math.max(...disks.map(d => d.percent)) : undefined;
-  return {cpu, mem, disk, disks};
+  return {cpu, mem, memText, disk, disks};
 }
 
 // '' = healthy, 'caution' = near a threshold, 'warn' = needs attention.
@@ -220,7 +224,10 @@ const TOP_PIVOTS = [
 // #p=<n> top-level pivot item, #m=<name> machine detail.
 function route(){
   const m = location.hash.match(/^#m=(.*)$/);
-  if(m) return {view:'detail', name:decodeURIComponent(m[1])};
+  if(m){
+    try{ return {view:'detail', name:decodeURIComponent(m[1])}; }
+    catch(e){ return {view:'list', pivot:1}; }   // malformed link: fall back to the machine list
+  }
   const n = Number((location.hash.match(/^#p=(\d+)$/) || [])[1] || 0);
   return {view:'list', pivot: n < TOP_PIVOTS.length ? n : 0};
 }
@@ -424,8 +431,10 @@ function renderSites(sites){
   return `<div class="group"><div class="group-header">网站（${list.length}）</div>` + list.slice(0, 8).map(s => {
     const name = s.name || s.domain || '-';
     const ok = s.status === '1' || s.status === 1 || s.status === true;
+    const edate = s.edate || s.expire || '';
     return `<div class="list-item"><span>${escapeHtml(name)}</span>
-      <span class="${ok ? 'caption' : 'warn'}">${ok ? '运行中' : escapeHtml(s.status ?? '未知')}</span></div>`;
+      <span><span class="${ok ? 'caption' : 'warn'}">${ok ? '运行中' : escapeHtml(s.status ?? '未知')}</span>
+      ${edate ? `<span class="caption" style="margin-left:12px">到期 ${escapeHtml(edate)}</span>` : ''}</span></div>`;
   }).join('') + '</div>';
 }
 
@@ -437,11 +446,14 @@ function overviewItem(p){
   html += metric('状态', isOffline(p) ? '离线' : '在线', isOffline(p) ? 'warn' : '');
   if(q && q.seen_at) html += metric('最后上报', new Date(q.seen_at*1000).toLocaleString(), '');
   html += metric('CPU', fmtPct(m.cpu), levelOf(m.cpu, th.cpu), m.cpu);
-  html += metric('内存', fmtPct(m.mem), levelOf(m.mem, th.mem), m.mem);
+  html += metric('内存', m.memText ? `${fmtPct(m.mem)}（${m.memText}）` : fmtPct(m.mem), levelOf(m.mem, th.mem), m.mem);
   const sys = p.system, net = p.network;
   if(sys && sys.system) html += metric('系统', sys.system, '');
   if(sys && sys.time) html += metric('运行时长', sys.time, '');
   if(net && net.load) html += metric('负载 (1/5/15)', `${net.load.one} / ${net.load.five} / ${net.load.fifteen}`, '');
+  if(net && (net.up !== undefined || net.down !== undefined)){
+    html += metric('网络 ↑ / ↓', `${fmtBytes(net.up*1024)}/s ↑  ${fmtBytes(net.down*1024)}/s ↓`, '');
+  }
   html += '</div></div>';
   const ext = (q && q.ip_external) || p.ip_external;
   const int_ = q && q.ip_internal;
@@ -455,9 +467,7 @@ function overviewItem(p){
   html += renderSites(p.sites);
   const dbs = p.databases && (p.databases.data || (Array.isArray(p.databases) ? p.databases : null));
   if(dbs) html += `<div class="group">${metric('数据库', String(dbs.length), '')}</div>`;
-  html += `<div class="group"><button class="text-command" data-toggle-raw>查看原始数据</button>
-    <pre class="raw" hidden>${escapeHtml(JSON.stringify(p, null, 2))}</pre></div>`;
-  return html;
+  return html + rawData(p);
 }
 
 function diskItem(p){
@@ -487,13 +497,21 @@ function statusOverview(p){
   const labelMap = {ok:'正常', degraded:'轻微异常', down:'故障', unknown:'未知'};
   const levelMap = {ok:'', degraded:'caution', down:'warn', unknown:'caution'};
   const targets = p.targets || [];
-  if(p.online === false) return `<div class="notice">${escapeHtml(p.error || '无法连接')}</div>`;
-  if(!targets.length) return '<div class="empty-hint">没有监控目标</div>';
-  return '<div class="group">' + targets.map(t => {
+  let html = '';
+  if(p.online === false) html += `<div class="notice">${escapeHtml(p.error || '无法连接')}</div>`;
+  else if(!targets.length) html += '<div class="empty-hint">没有监控目标</div>';
+  else html += '<div class="group">' + targets.map(t => {
     const level = levelMap[t.status] ?? 'caution';
     return `<div class="list-item"><span>${escapeHtml(t.display_name || t.id)}</span>
       <span class="${level || 'caption'}">${escapeHtml(labelMap[t.status] || t.status)}</span></div>`;
   }).join('') + '</div>';
+  if(p.url) html += `<div class="group"><div class="metric"><div class="metric-label">来源地址</div><div>${escapeHtml(p.url || '')}</div></div></div>`;
+  return html + rawData(p);
+}
+
+function rawData(p){
+  return `<div class="group"><button class="text-command" data-toggle-raw>查看原始数据</button>
+    <pre class="raw" hidden>${escapeHtml(JSON.stringify(p, null, 2))}</pre></div>`;
 }
 
 function detailPivots(p){
