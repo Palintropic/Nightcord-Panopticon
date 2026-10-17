@@ -6,8 +6,9 @@ NOW = 10_000
 STALE = 180
 
 
-def state(panel, age, cpu=10.0):
-    return {"panel": panel, "seen_at": NOW - age, "sample": {"cpu": cpu, "mem": 10.0, "disk": 10.0},
+def state(panel, age, cpu=10.0, generation=0):
+    return {"panel": panel, "seen_at": NOW - age, "generation": generation,
+            "sample": {"cpu": cpu, "mem": 10.0, "disk": 10.0},
             "disk_detail": None, "ip_internal": None, "ip_external": None}
 
 
@@ -148,7 +149,7 @@ class RecoveryTests(unittest.TestCase):
     def run_rounds(self, n, rounds):
         """rounds: 每轮的 states；照 app 巡检的顺序调用 plan / forget_keys / notify / resolve。"""
         for states in rounds:
-            alerts, keep, drop = plan_agent_alerts(states, {}, NOW, STALE, n.active_keys_for)
+            alerts, keep, drop = plan_agent_alerts(states, {"cpu": 90}, NOW, STALE, n.active_keys_for, n.active_merged)
             n.forget_keys(drop)
             for a in alerts:
                 n.notify(a)
@@ -162,7 +163,7 @@ class RecoveryTests(unittest.TestCase):
         n.retire("a")
         self.run_rounds(n, [abc[1:]])
         self.assertEqual(n.sent, [("全部机器同时失联", "red"), ("全部机器同时失联", "red")])
-        self.assertEqual(n.active_keys_for(ALL_OFFLINE_SERVER), [merged_offline_key(["b", "c"])])
+        self.assertEqual([k for k, _ in n.active_merged()], [merged_offline_key(["b", "c"])])
 
     def test_merged_alert_gaining_a_member_is_superseded_not_recovered(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0, "c": 0})
@@ -175,6 +176,29 @@ class RecoveryTests(unittest.TestCase):
         self.run_rounds(n, [[state("a", 600), state("b", 600)],
                             [state("a", 10), state("b", 600)]])
         self.assertEqual(n.sent, [("全部机器同时失联", "red"), ("机器离线告警", "red"), ("全部机器同时失联已恢复", "green")])
+
+    def test_new_generation_alert_is_not_swallowed_by_old_one(self):
+        n = RecordingNotifier(watched={"a": 0})
+        n.cooldown = 600
+        self.run_rounds(n, [[state("a", 10, cpu=95)]])
+        n.retire("a"); n.come_back("a")          # 另一个进程移除，随后又上报回来，CPU 仍高
+        self.run_rounds(n, [[state("a", 10, cpu=95, generation=1)]])
+        self.assertEqual(n.sent, [("CPU高占用告警", "red"), ("CPU高占用告警", "red")])
+
+    def test_plan_from_before_retire_is_dropped(self):
+        n = RecordingNotifier(watched={"a": 0, "b": 0})
+        alerts, _, _ = plan_agent_alerts([state("a", 600), state("b", 10)], {}, NOW, STALE, n.active_keys_for, n.active_merged)
+        n.retire("a"); n.come_back("a")          # 计划算完后 a 被移除又回来
+        for a in alerts:
+            n.notify(a)
+        self.run_rounds(n, [[state("a", 10, generation=1), state("b", 10)]])
+        self.assertEqual(n.sent, [])
+
+    def test_machine_named_like_merged_alert_does_not_break_round(self):
+        n = RecordingNotifier(watched={ALL_OFFLINE_SERVER: 0, "b": 0})
+        rounds = [[state(ALL_OFFLINE_SERVER, 10, cpu=95), state("b", 10)]] * 2 + [[state(ALL_OFFLINE_SERVER, 10), state("b", 10)]]
+        self.run_rounds(n, rounds)
+        self.assertEqual(n.sent, [("CPU高占用告警", "red"), ("CPU高占用告警已恢复", "green")])
 
     def test_merged_keys_do_not_collide(self):
         self.assertNotEqual(merged_offline_key(["a", "b|c"]), merged_offline_key(["a|b", "c"]))

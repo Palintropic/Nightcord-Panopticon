@@ -346,6 +346,7 @@ def _agent_states(now):
         states.append({
             "panel": panel,
             "seen_at": row["seen_at"],
+            "generation": row["generation"],
             "online": now - row["seen_at"] <= AGENT_STALE_SECONDS,
             "sample": metrics_store.get_latest(panel),
             "disk_detail": metrics_store.get_disk_detail(panel),
@@ -785,7 +786,8 @@ def background_alert_loop():
             # 离线的报离线（全部同时离线时合并成一条）。卸载掉的机器在设置页"移除"后就不再盯。
             now = time.time()
             agent_alerts, keep_keys, drop_keys = plan_agent_alerts(
-                _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
+                _agent_states(now), thresholds, now, AGENT_STALE_SECONDS,
+                _notifier.active_keys_for, _notifier.active_merged,
             )
             active_keys |= keep_keys
             _notifier.forget_keys(drop_keys)

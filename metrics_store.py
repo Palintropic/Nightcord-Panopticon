@@ -110,12 +110,13 @@ def mark_seen(panel, seen_at):
 def list_known_panels():
     """
     所有"应该在线"的机器：上报过至少一次、且没被移除（移除后再上报会自动取消移除，见 mark_seen）。
-    返回 [{"panel", "seen_at"}, ...]，按名字排序。离线判定由调用方拿 seen_at 跟当前时间比。
+    返回 [{"panel", "seen_at", "generation"}, ...]，按名字排序。离线判定由调用方拿 seen_at 跟当前时间比；
+    generation 是读取这一刻的监控代次，告警计划带着它，发送时代次变了就作废（见 Notifier.notify）。
     """
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT s.panel, s.seen_at FROM agent_last_seen s
+            SELECT s.panel, s.seen_at, s.generation FROM agent_last_seen s
             LEFT JOIN agent_retired r ON r.panel = s.panel
             WHERE r.panel IS NULL
             ORDER BY s.panel

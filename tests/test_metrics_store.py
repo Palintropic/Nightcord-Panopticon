@@ -19,7 +19,7 @@ class KnownPanelsTests(unittest.TestCase):
 
     def test_panel_stays_known_after_it_stops_reporting(self):
         metrics_store.mark_seen("tokyo", 1000)
-        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "tokyo", "seen_at": 1000}])
+        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "tokyo", "seen_at": 1000, "generation": 0}])
 
     def test_mark_seen_overwrites_with_latest_receive_time(self):
         metrics_store.mark_seen("tokyo", 99999999999)  # 曾经写进去的错误大值不能把它钉死
@@ -43,7 +43,7 @@ class KnownPanelsTests(unittest.TestCase):
         self.assertTrue(metrics_store.retire_panel("old-host", 1100))
         self.assertEqual(metrics_store.list_known_panels(), [])
         metrics_store.mark_seen("old-host", 1200)
-        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "old-host", "seen_at": 1200}])
+        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "old-host", "seen_at": 1200, "generation": 1}])
 
     def test_watch_generations_track_retirement(self):
         metrics_store.mark_seen("a", 1000)
@@ -71,13 +71,13 @@ class KnownPanelsTests(unittest.TestCase):
         metrics_store.insert_sample("shanghai", 500, 1, 2, 3, 0, 0)
         metrics_store.insert_sample("shanghai", 900, 1, 2, 3, 0, 0)
         metrics_store.init_db()
-        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "shanghai", "seen_at": 900}])
+        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "shanghai", "seen_at": 900, "generation": 0}])
 
     def test_prune_keeps_last_seen(self):
         metrics_store.insert_sample("tokyo", 100, 1, 2, 3, 0, 0)
         metrics_store.mark_seen("tokyo", 100)
         metrics_store.prune_older_than(1000)
-        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "tokyo", "seen_at": 100}])
+        self.assertEqual(metrics_store.list_known_panels(), [{"panel": "tokyo", "seen_at": 100, "generation": 0}])
 
 
 if __name__ == "__main__":
