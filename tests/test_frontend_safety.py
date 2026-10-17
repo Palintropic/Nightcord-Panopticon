@@ -18,6 +18,11 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("data-passkey-id=\"${escapeAttr(p.credential_id)}\"", source)
         self.assertNotIn("onclick=\"deletePasskey('${p.credential_id}')\"", source)
 
+    def test_save_only_collects_panel_rows(self):
+        source = (ROOT / "static" / "settings.html").read_text(encoding="utf-8")
+        self.assertIn("document.querySelectorAll('#panels .panel-card')", source)
+        self.assertNotIn("document.querySelectorAll('.panel-card')", source)
+
 
 if __name__ == "__main__":
     unittest.main()

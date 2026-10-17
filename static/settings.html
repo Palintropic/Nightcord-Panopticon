@@ -361,7 +361,9 @@ async function load(){
 }
 
 function collectPanels(){
-  return Array.from(document.querySelectorAll('.panel-card')).map(card => ({
+  // 只收集面板列表里的卡片；passkey、记住密码的服务器、青源机器列表也用 .panel-card 样式，
+  // 它们没有 .p-name 这些输入框，一起收集会抛错，保存按钮就永远停在"保存中"
+  return Array.from(document.querySelectorAll('#panels .panel-card')).map(card => ({
     name: card.querySelector('.p-name').value.trim(),
     url: card.querySelector('.p-url').value.trim(),
     api_key: card.querySelector('.p-key').value.trim(),
