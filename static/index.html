@@ -146,6 +146,10 @@ function liveQingyuan(p){
   return q;
 }
 function isOffline(p){ return p.online === false || (p.qingyuan && p.qingyuan.online === false); }
+// No usable numbers at all: the card's own source is down. A BT card whose attached agent went quiet
+// still has BT's numbers; it shows them, flagged with the agent being offline.
+function noMetrics(p){ return p.online === false || (p.kind === 'qingyuan-only' && p.qingyuan && p.qingyuan.online === false); }
+function agentOnlyOffline(p){ return !noMetrics(p) && p.qingyuan && p.qingyuan.online === false; }
 
 function diskRows(p){
   const q = liveQingyuan(p);
@@ -325,6 +329,7 @@ function stateText(p){
     const down = (p.targets || []).filter(t => t.status === 'down').length;
     return p.online === false ? '无法连接' : (down ? `${down} 个目标故障` : `${(p.targets || []).length} 个目标`);
   }
+  if(agentOnlyOffline(p)) return `青源离线 · ${fmtAgo(p.qingyuan.seen_at)}`;
   return isOffline(p) ? `离线 · ${fmtAgo(p.qingyuan && p.qingyuan.seen_at)}` : '';
 }
 
@@ -345,14 +350,16 @@ function machinesView(){
         <span class="summary ${state}">${text}</span></a>`;
     }
     const m = machineMetrics(p);
+    const blank = noMetrics(p);
     const offline = isOffline(p);
     const seenAt = p.qingyuan && p.qingyuan.seen_at;
-    const cell = (v, t) => offline ? '<span class="num">-</span>' : `<span class="num ${levelOf(v, t)}">${escapeHtml(fmtPct(v))}</span>`;
-    const summary = offline ? escapeHtml(stateText(p))
-      : `CPU ${escapeHtml(fmtPct(m.cpu))} · 内存 ${escapeHtml(fmtPct(m.mem))} · 磁盘 ${escapeHtml(fmtPct(m.disk))}`;
+    const cell = (v, t) => blank ? '<span class="num">-</span>' : `<span class="num ${levelOf(v, t)}">${escapeHtml(fmtPct(v))}</span>`;
+    const numbers = `CPU ${escapeHtml(fmtPct(m.cpu))} · 内存 ${escapeHtml(fmtPct(m.mem))} · 磁盘 ${escapeHtml(fmtPct(m.disk))}`;
+    const summary = blank ? escapeHtml(stateText(p)) : offline ? `${numbers} · ${escapeHtml(stateText(p))}` : numbers;
+    const seen = offline ? escapeHtml(stateText(p)) : escapeHtml(fmtAgo(seenAt));
     return `<a class="machine-row" href="${href}"><span class="mark ${state || 'ok'}"></span><span class="name">${name}</span>
       ${cell(m.cpu, th.cpu)}${cell(m.mem, th.mem)}${cell(m.disk, th.disk)}
-      <span class="seen ${offline ? 'warn' : ''}">${offline ? '离线 · ' : ''}${escapeHtml(fmtAgo(seenAt))}</span>
+      <span class="seen ${offline ? 'warn' : ''}">${seen}</span>
       <span class="summary ${offline ? 'warn' : ''}">${summary}</span></a>`;
   }).join('')}</div>`;
 }
@@ -381,7 +388,7 @@ function tile(p){
         <div class="reading"><div class="t-value">${down}</div><div class="t-label">故障</div></div></div>
         <div class="tile-label"><span class="name">${name}</span></div></div></a>`;
   }
-  const offline = isOffline(p);
+  const offline = noMetrics(p);
   const s = offline ? 'offline' : (stateOf(p) || 'ok');
   const m = machineMetrics(p);
   const samples = tileHistory[p.name] || [];
@@ -394,7 +401,8 @@ function tile(p){
     <div class="tile-inner">
       <div class="readings">${front}</div>
       ${samples.length >= 2 ? sparkline(samples) : ''}
-      <div class="tile-label"><span class="name">${name}</span>${offline ? '' : `<span class="seen">${escapeHtml(fmtAgo(seenAt))}</span>`}</div>
+      <div class="tile-label"><span class="name">${name}</span>${offline ? ''
+        : `<span class="seen">${escapeHtml(agentOnlyOffline(p) ? stateText(p) : fmtAgo(seenAt))}</span>`}</div>
     </div>
   </a>`;
 }
@@ -604,7 +612,9 @@ async function loadTileHistory(){
   const machines = panels().filter(p => p.kind !== 'nightcord-status' && p.name);
   await Promise.all(machines.map(async p => {
     try{
-      const res = await fetch(`/api/metrics/history?panel=${encodeURIComponent(p.name)}&hours=1`);
+      // Give up on a stuck request instead of piling one up every refresh (10 s by eye).
+      const res = await fetch(`/api/metrics/history?panel=${encodeURIComponent(p.name)}&hours=1`,
+                              {signal: AbortSignal.timeout(10000)});
       tileHistory[p.name] = res.ok ? ((await res.json()).samples || []) : [];
     }catch(e){ tileHistory[p.name] = []; }
   }));
@@ -614,18 +624,26 @@ async function refresh(animate){
   try{
     const res = await fetch('/api/status');
     lastData = await res.json();
-    if(!lastData.error) await loadTileHistory();
   }catch(e){
     document.getElementById('statusSummary').textContent = '刷新失败';
     return;
   }
   const r = route();
-  // Do not rebuild an open history item on the 15 s refresh: it would reset the chart.
-  if(!animate && r.view === 'detail'){
-    const p = panels().find(x => x.name === r.name);
-    if(p && detailPivots(p)[detailPivot].render === historyItem){ renderStatusBar(); return; }
+  // An open history item keeps its range buttons; only the chart data is reloaded.
+  const p = r.view === 'detail' ? panels().find(x => x.name === r.name) : null;
+  if(!animate && p && detailPivots(p)[detailPivot].render === historyItem){
+    renderStatusBar();
+    loadChart(p.name);
+  } else {
+    render(animate);
   }
-  render(animate);
+  // Tile charts arrive afterwards: a slow history request must not hold up the dashboard.
+  if(!lastData.error){
+    const snapshot = lastData;
+    await loadTileHistory();
+    const now = route();
+    if(lastData === snapshot && now.view === 'list' && now.pivot === 0) render(false);
+  }
 }
 document.getElementById('refresh').addEventListener('click', () => refresh(false));
 document.getElementById('logout').addEventListener('click', async () => {
