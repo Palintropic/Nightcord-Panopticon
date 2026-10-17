@@ -2,7 +2,9 @@
 告警通知模块：支持飞书自定义机器人 Webhook 与 SMTP 邮件。
 两个通道都是"尽力而为"——某一个失败不影响另一个，也不影响主流程。
 """
+import json
 import smtplib
+import threading
 import time
 from datetime import datetime
 from email.mime.text import MIMEText
@@ -13,8 +15,16 @@ import requests
 UNKNOWN_IP = "未知"
 
 
+def alert_key(source: str, name: str, suffix: str) -> str:
+    """
+    告警去重 key。机器名用 JSON 编码（带引号），不同来源、不同机器、不同问题永远拼不成同一个 key；
+    固定的合并告警 key（ALL_OFFLINE_KEY）不含引号，也不会跟任何机器名撞上。
+    """
+    return f"{source}:{json.dumps(name, ensure_ascii=False)}:{suffix}"
+
+
 class Notifier:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, watch_generations=None):
         """
         config 形如:
         {
@@ -26,8 +36,18 @@ class Notifier:
         """
         self.config = config or {}
         self.cooldown = self.config.get("cooldown_seconds", 600)
-        self._last_sent = {}  # key -> 上次通知时间戳，问题解决后又复发时用来防抖
-        self._active = set()  # 当前"已经通知过、问题还没解决"的 key，同一个问题只发一次
+        # watch_generations(panels) -> {panel: 代次} 或 None：现查持久化名单（metrics_store.watch_generations）。
+        # 发任何牵涉青源机器的通知前都在发送那一刻问一次——这一刻就是"移除"和"通知"之间的先后分界：
+        # 在它之前移除的，通知作废（告警不发、恢复静默丢弃）；在它之后才移除的，本来就排在这条通知后面。
+        # 告警发出时记下代次，恢复时代次对不上（中间移除过，哪怕又回来了）也静默丢弃。
+        # 这样移除请求跑在别的进程、或者插在巡检中途，都不会被当成恢复。
+        self._watch_generations = watch_generations
+        self._last_sent = {}  # key -> (上次通知时间戳, 当时的监控代次)，问题解决后又复发时用来防抖；冷却不跨代
+        # 当前"已经通知过、问题还没解决"的告警：key -> 发出时的 alert dict。
+        # 同一个问题只发一次；问题解决时用存下来的 alert 拼"已恢复"通知。
+        self._active = {}
+        # 巡检线程和设置页"移除机器"的请求线程都会改 _active，改之前要先拿锁
+        self._lock = threading.Lock()
 
     def update_config(self, config: dict):
         """巡检线程每轮都会重新读一次 config.yaml，用这个刷新配置，
@@ -37,29 +57,60 @@ class Notifier:
         self.config = config or {}
         self.cooldown = self.config.get("cooldown_seconds", 600)
 
-    def _should_send(self, key: str) -> bool:
+    def _should_send(self, key: str, generations) -> bool:
+        # 调用方已持有 self._lock
         if key in self._active:
             return False  # 这个问题还没解决，之前已经通知过了，不用再发
         now = time.time()
-        last = self._last_sent.get(key, 0)
-        if now - last < self.cooldown:
-            return False  # 刚解决又复发（抖动）也别刷屏，等冷却过了才重新算一次新问题
-        self._last_sent[key] = now
-        self._active.add(key)
+        last, last_generations = self._last_sent.get(key, (0, None))
+        if last_generations == generations and now - last < self.cooldown:
+            return False  # 同一代里刚解决又复发（抖动）也别刷屏；换了一代（移除后又回来）从头算
+        self._last_sent[key] = (now, generations)
         return True
+
+    def is_active(self, key: str) -> bool:
+        with self._lock:
+            return key in self._active
 
     def resolve(self, still_active_keys: set):
         """
         每轮巡检结束时调用：这轮里已经不再出现的 key 说明问题解决了，
-        从"已通知"名单里摘掉，以后再犯还能收到通知（而不是永远只通知一次）。
+        从"已通知"名单里摘掉并发一条"已恢复"，以后再犯还能收到通知（而不是永远只通知一次）。
+        只有真正通知过的问题才会有恢复通知——冷却期里被压下去的抖动不会凭空冒出一条"已恢复"。
         """
-        self._active &= still_active_keys
+        now = time.time()
+        with self._lock:
+            resolved = [self._active.pop(k) for k in list(self._active) if k not in still_active_keys]
+        for alert in resolved:
+            if "generations" in alert and self._current_generations(alert) != alert["generations"]:
+                continue  # 牵涉的机器移除过：它没恢复，只是不再盯了（或已是新一代），不发"已恢复"
+            recovery = dict(alert)
+            recovery["alert_type"] = f"{alert['alert_type']}已恢复"
+            recovery["content"] = f"{alert['content']}\n\n问题已解除，持续约 {_format_duration(now - alert['notified_at'])}。"
+            self._send_feishu(recovery, template="green", mention_all=False)
+            self._send_email(recovery)
+
+    def active_keys_for(self, panel: str):
+        """
+        某台青源机器名下未解决的告警 key。按告警牵涉的青源机器（panels）认，不看显示名：
+        同名的宝塔面板告警（绑定部署时名字本来就一样）不算，合并告警也不算。
+        """
+        with self._lock:
+            return [k for k, a in self._active.items() if panel in (a.get("panels") or []) and not a.get("merged")]
+
+
+
+    def _current_generations(self, alert: dict):
+        panels = alert.get("panels")
+        if panels is None or self._watch_generations is None:
+            return {}  # 宝塔面板等非青源告警不受监控名单约束
+        return self._watch_generations(panels)
 
     def notify(self, alert: dict):
         """
         alert 形如:
         {
-          "key": "面板A-cpu",          # 用于冷却去重
+          "key": alert_key("bt", "面板A", "cpu"),  # 用于冷却去重
           "server": "面板A",
           "alert_type": "CPU高占用告警",
           "content": "最近5分钟内机器CPU平均占用率为89.28%，高于告警值60%",
@@ -67,14 +118,26 @@ class Notifier:
           "ip_internal": "172.31.47.45" 或 None,
         }
         """
-        if not self._should_send(alert["key"]):
-            return
+        generations = self._current_generations(alert)
+        if generations is None:
+            return  # 牵涉的机器在发送这一刻已经不在名单里了
+        planned = alert.get("generations")
+        if planned is not None and self._watch_generations is not None and planned != generations:
+            return  # 计划是按移除之前那一代的数据算的，已经过时，交给下一轮按新一代重新判断
+        with self._lock:
+            existing = self._active.get(alert["key"])
+            if existing is not None and existing.get("generations") != generations:
+                # 同一个 key 上还挂着上一代的告警：那是移除前的事，作废它，新一代从头算
+                del self._active[alert["key"]]
+            if not self._should_send(alert["key"], generations):
+                return
+            self._active[alert["key"]] = dict(alert, notified_at=time.time(), generations=generations)
         self._send_feishu(alert)
         self._send_email(alert)
 
     # ---- 飞书自定义机器人 ----
     @staticmethod
-    def _build_feishu_card(alert: dict, template: str = "red"):
+    def _build_feishu_card(alert: dict, template: str = "red", mention_all: bool = True):
         """
         飞书卡片 Schema 2.0 结构：card.header 是那条带颜色的标题栏，
         card.body.elements 才是正文。只塞一个不带 header 的 markdown 元素虽然飞书也认，
@@ -88,7 +151,7 @@ class Notifier:
             f">IP地址：{ip_ext}(外) {ip_int}(内)",
             f">发送时间：{sent_at}",
             f">通知类型：{alert['alert_type']}",
-            f">告警内容：\n{alert['content']}<at id=all></at>",
+            f">告警内容：\n{alert['content']}" + ("<at id=all></at>" if mention_all else ""),
         ])
         return {
             "msg_type": "interactive",
@@ -106,12 +169,13 @@ class Notifier:
             },
         }
 
-    def _send_feishu(self, alert: dict):
+    def _send_feishu(self, alert: dict, template: str = "red", mention_all: bool = True):
         fs = self.config.get("feishu", {})
         if not fs.get("enabled") or not fs.get("webhook"):
             return
         try:
-            requests.post(fs["webhook"], json=self._build_feishu_card(alert), timeout=6)
+            card = self._build_feishu_card(alert, template=template, mention_all=mention_all)
+            requests.post(fs["webhook"], json=card, timeout=6)
         except Exception as e:
             print(f"[notifier] 飞书推送失败: {e}")
 
@@ -173,6 +237,14 @@ class Notifier:
             print(f"[notifier] 邮件推送失败: {e}")
 
 
+def _format_duration(seconds: float) -> str:
+    minutes = max(1, round(seconds / 60))
+    if minutes < 60:
+        return f"{minutes} 分钟"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} 小时 {minutes} 分钟" if minutes else f"{hours} 小时"
+
+
 def evaluate_alerts(panel_result: dict, thresholds: dict):
     """
     根据一台面板（宝塔面板 / Nightcord-Status）的采集结果 + 阈值配置，产出告警列表。
@@ -186,7 +258,7 @@ def evaluate_alerts(panel_result: dict, thresholds: dict):
 
     def make(suffix, alert_type, content):
         return {
-            "key": f"{name}-{suffix}",
+            "key": alert_key("bt", name, suffix),
             "server": name,
             "alert_type": alert_type,
             "content": content,
@@ -247,8 +319,9 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
 
     def make(suffix, alert_type, content):
         return {
-            "key": f"{panel_name}-{suffix}",
+            "key": alert_key("qingyuan", panel_name, suffix),
             "server": panel_name,
+            "panels": [panel_name],  # 牵涉的青源机器，移除机器时据此静默作废（见 Notifier.watch_generations）
             "alert_type": alert_type,
             "content": content,
             "ip_external": ip_external,
@@ -273,3 +346,70 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
     elif disk is not None and disk >= disk_threshold:
         alerts.append(make("agent-disk-/", "磁盘余量告警", f"挂载目录【/】的磁盘已使用容量为{disk:.2f}%，大于告警值{disk_threshold}%"))
     return alerts
+
+
+ALL_OFFLINE_KEY = "qingyuan-all-offline"  # 不含引号，见 alert_key
+ALL_OFFLINE_SERVER = "全部青源机器"
+
+
+def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, active_keys_for):
+    """
+    一轮巡检里所有青源机器的告警计划，返回 (alerts, keep_keys)。
+    - alerts：这轮要交给 Notifier.notify() 的告警。
+    - keep_keys：这轮没产出、但不能当成"已恢复"的 key。机器离线时拿不到新样本，
+      它之前的 CPU/磁盘告警既不能算恢复也不能重发，原样保留到它重新上报为止。
+    states 每项形如 {"panel", "seen_at", "generation", "sample", "ip_external", "ip_internal", "disk_detail"}。
+    active_keys_for(server) 返回该机器名下当前未解决的普通告警 key（Notifier.active_keys_for）。
+    每条告警都带上读取状态时的监控代次 generations，发送时代次变了就作废（见 Notifier.notify）。
+
+    所有机器同时离线（至少两台）时只发一条合并告警：大概率是 Panopticon 自己这边断网 /
+    WireGuard 掉了，而不是每台机器都挂了，分开报只会一下子刷屏。合并告警说的是"一台都联系不上"
+    这一件事，key 固定：失联期间成员增减仍是同一件事；只要有任意一台联系上，这件事就结束了
+    （发"已恢复"，之后由各台机器自己的告警接着报）。成员被移除时按代次静默作废，不算恢复。
+    """
+    alerts, keep_keys = [], set()
+    offline = [s for s in states if now - s["seen_at"] > stale_seconds]
+    offline_panels = {s["panel"] for s in offline}
+
+    for s in offline:
+        keep_keys |= set(active_keys_for(s["panel"]))
+
+    all_offline = len(states) >= 2 and len(offline) == len(states)
+    generation_of = {s["panel"]: s.get("generation", 0) for s in states}
+
+    if all_offline:
+        names = "、".join(s["panel"] for s in states)
+        alerts.append({
+            "key": ALL_OFFLINE_KEY,
+            "server": ALL_OFFLINE_SERVER,
+            "merged": True,
+            "panels": [s["panel"] for s in states],
+            "generations": dict(generation_of),
+            "alert_type": "全部机器同时失联",
+            "content": f"{names} 都超过 {stale_seconds // 60} 分钟没有上报。"
+                       f"同时失联多半是 Panopticon 这边的网络或 WireGuard 出了问题，先查看板所在的机器。",
+            "ip_external": None,
+            "ip_internal": None,
+        })
+        return alerts, keep_keys
+
+    for s in states:
+        if s["panel"] in offline_panels:
+            last = datetime.fromtimestamp(s["seen_at"]).strftime("%Y-%m-%d %H:%M:%S")
+            alerts.append({
+                "key": alert_key("qingyuan", s["panel"], "agent-offline"),
+                "server": s["panel"],
+                "panels": [s["panel"]],
+                "alert_type": "机器离线告警",
+                "content": f"青源 agent 超过 {stale_seconds // 60} 分钟没有上报，最后一次上报在 {last}。",
+                "ip_external": s.get("ip_external"),
+                "ip_internal": s.get("ip_internal"),
+            })
+        else:
+            alerts.extend(evaluate_agent_alerts(
+                s["panel"], s.get("sample"), thresholds,
+                s.get("ip_external"), s.get("ip_internal"), s.get("disk_detail"),
+            ))
+    for a in alerts:
+        a["generations"] = {p: generation_of[p] for p in a["panels"]}
+    return alerts, keep_keys

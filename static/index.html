@@ -300,10 +300,12 @@ const NIGHTCORD_MEMBERS = [
 ];
 
 function renderCard(p, idx){
-  const online = p.online !== false;
+  const online = p.online !== false && !(p.qingyuan && p.qingyuan.online === false);
   const dot = online ? 'ok' : 'bad';
   const member = NIGHTCORD_MEMBERS[idx % NIGHTCORD_MEMBERS.length];
-  const qingyuan = p.qingyuan;
+  // 挂在宝塔卡片上的青源数据如果已经停报，就别再当实时数据显示，单独标出 agent 离线
+  const qingyuanStale = p.kind !== 'qingyuan-only' && p.qingyuan && p.qingyuan.online === false;
+  const qingyuan = qingyuanStale ? null : p.qingyuan;
   // 老版本青源 agent 只报单个百分比、没有 disk_detail 数组，兜底拼成一行，
   // 用户不用先升级 agent 就不至于突然从"有磁盘数据"变成"无数据"
   const qyDiskDetail = (qingyuan && qingyuan.disk_detail && qingyuan.disk_detail.length)
@@ -312,8 +314,12 @@ function renderCard(p, idx){
         ? [{path: '/', total: null, used: null, percent: qingyuan.disk}]
         : null);
   let body = '';
-  if(!online){
+  if(p.online === false){
+    // 只看卡片自己的连接状态；宝塔连得上、只是挂在上面的青源停报时，由下面的 qingyuanStale 单独提示
     body += `<div class="err">${escapeHtml(p.error || (p.kind === 'qingyuan-only' ? '青源 agent 已超过 3 分钟没有上报' : '无法连接该面板'))}</div>`;
+  }
+  if(qingyuanStale){
+    body += `<div class="err">${escapeHtml(p.qingyuan.error || '青源 agent 已超过 3 分钟没有上报')}</div>`;
   }
   if(p.kind === 'nightcord-status'){
     body += `<div class="section-title">监控目标</div>${renderNightcordStatus(p)}`;

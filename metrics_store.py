@@ -6,6 +6,7 @@
 import json
 import os
 import sqlite3
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "metrics.db")
@@ -33,6 +34,22 @@ CREATE TABLE IF NOT EXISTS agent_disk_detail (
   panel TEXT PRIMARY KEY,
   detail_json TEXT
 );
+
+-- 每台机器最后一次上报的时间（Panopticon 收到上报时的服务器时间，不用 agent 自报的 ts，
+-- 免得 agent 时钟漂移导致误判离线）。不随 metrics 历史一起清理：离线再久也还记得这台机器。
+-- generation：监控代次，每"移除"一次加 1。告警发出时记下当时的代次，代次变了的旧告警永远作废，
+-- 这样"移除 → 又上报回来"之后，移除之前的旧告警不会被当成恢复。
+CREATE TABLE IF NOT EXISTS agent_last_seen (
+  panel TEXT PRIMARY KEY,
+  seen_at INTEGER NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0
+);
+
+-- 在设置页"移除"掉的机器。它之后只要再上报一次，记录就会在同一个事务里被删掉，自动回到名单里。
+CREATE TABLE IF NOT EXISTS agent_retired (
+  panel TEXT PRIMARY KEY,
+  retired_at INTEGER NOT NULL
+);
 """
 
 
@@ -45,6 +62,19 @@ def _connect():
 def init_db():
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        columns = [r["name"] for r in conn.execute("PRAGMA table_info(agent_last_seen)")]
+        if "generation" not in columns:  # 早期版本建的表没有这一列
+            conn.execute("ALTER TABLE agent_last_seen ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
+        # 升级前就在上报的机器还没有 agent_last_seen 记录，用历史里最新一条样本补上，
+        # 否则它们要等下一次上报才会出现在"应该在线"的名单里。历史里的 ts 是 agent 自报的，
+        # 时钟跑快的 agent 会留下未来时间，回填时封顶到现在，不然它停报后会一直显示在线
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO agent_last_seen (panel, seen_at)
+            SELECT panel, MIN(MAX(ts), ?) FROM metrics GROUP BY panel
+            """,
+            (int(time.time()),),
+        )
 
 
 def insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps):
@@ -59,6 +89,80 @@ def insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps):
             """,
             (panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps),
         )
+
+
+def mark_seen(panel, seen_at):
+    """
+    记一次有效上报。直接覆盖成这次的服务器时间（不取 MAX，免得哪个错误的大值把它永远钉住），
+    并在同一个事务里取消"已移除"标记——上报本身就说明机器回来了，不靠比较时间戳推断先后。
+    """
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_last_seen (panel, seen_at) VALUES (?, ?)
+            ON CONFLICT(panel) DO UPDATE SET seen_at=excluded.seen_at
+            """,
+            (panel, int(seen_at)),
+        )
+        conn.execute("DELETE FROM agent_retired WHERE panel = ?", (panel,))
+
+
+def list_known_panels():
+    """
+    所有"应该在线"的机器：上报过至少一次、且没被移除（移除后再上报会自动取消移除，见 mark_seen）。
+    返回 [{"panel", "seen_at", "generation"}, ...]，按名字排序。离线判定由调用方拿 seen_at 跟当前时间比；
+    generation 是读取这一刻的监控代次，告警计划带着它，发送时代次变了就作废（见 Notifier.notify）。
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.panel, s.seen_at, s.generation FROM agent_last_seen s
+            LEFT JOIN agent_retired r ON r.panel = s.panel
+            WHERE r.panel IS NULL
+            ORDER BY s.panel
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def watch_generations(panels):
+    """
+    发通知前的现查：这些机器都还在监控名单里时返回 {panel: 监控代次}，有任何一台不在（没上报过 /
+    当前被移除）就返回 None。调用方拿发送时记下的代次跟恢复时的比，不一样就说明中间移除过。
+    """
+    panels = set(panels)
+    if not panels:
+        return {}
+    with _connect() as conn:
+        placeholders = ",".join("?" * len(panels))
+        rows = conn.execute(
+            f"""
+            SELECT s.panel, s.generation FROM agent_last_seen s
+            LEFT JOIN agent_retired r ON r.panel = s.panel
+            WHERE r.panel IS NULL AND s.panel IN ({placeholders})
+            """,
+            tuple(panels),
+        ).fetchall()
+        if len(rows) != len(panels):
+            return None
+        return {r["panel"]: r["generation"] for r in rows}
+
+
+def retire_panel(panel, retired_at):
+    """把机器移出"应该在线"的名单。只认上报过的机器，返回是否真的移除了。"""
+    with _connect() as conn:
+        known = conn.execute("SELECT 1 FROM agent_last_seen WHERE panel = ?", (panel,)).fetchone()
+        if not known:
+            return False
+        conn.execute(
+            """
+            INSERT INTO agent_retired (panel, retired_at) VALUES (?, ?)
+            ON CONFLICT(panel) DO UPDATE SET retired_at=excluded.retired_at
+            """,
+            (panel, int(retired_at)),
+        )
+        conn.execute("UPDATE agent_last_seen SET generation = generation + 1 WHERE panel = ?", (panel,))
+        return True
 
 
 def upsert_ip(panel, ip_internal, ip_external):
@@ -117,15 +221,6 @@ def get_latest(panel):
             (panel,),
         ).fetchone()
         return dict(row) if row else None
-
-
-def list_active_panels(since_ts):
-    """最近 since_ts 之后还有上报的面板名单，用于告警巡检——避免给早就下线的 agent 反复报警。"""
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT panel FROM metrics WHERE ts >= ?", (since_ts,)
-        ).fetchall()
-        return [r["panel"] for r in rows]
 
 
 def query_history(panel, since_ts):
