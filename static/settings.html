@@ -105,6 +105,13 @@
   </section>
 
   <section>
+    <h2>青源机器</h2>
+    <div class="desc">上报过的机器会一直被盯着，离线超过 3 分钟就告警。机器退役或卸掉 agent 后在这里移除；
+      移除后如果它又开始上报，会自动回到列表里。</div>
+    <div id="agentList"></div>
+  </section>
+
+  <section>
     <h2>登录验证</h2>
     <div class="desc">Dashboard 如果要长期公网暴露，务必开启。密码输入框留空 = 不修改已保存的密码。</div>
     <div class="checkbox-row"><input type="checkbox" id="authEnabled"> 开启登录验证</div>
@@ -423,6 +430,42 @@ async function save(){
   }
 }
 
+async function loadAgentList(){
+  const res = await fetch('/api/agents');
+  const data = await res.json();
+  const wrap = document.getElementById('agentList');
+  const agents = data.agents || [];
+  if(!agents.length){
+    wrap.innerHTML = '<div class="hint">还没有机器上报过。</div>';
+    return;
+  }
+  wrap.innerHTML = agents.map(a => `
+    <div class="panel-card" style="padding:8px 12px" data-agent-name="${escapeAttr(a.name)}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <div style="font-size:13px">
+          <strong>${escapeAttr(a.name)}</strong>
+          <span style="color:${a.online ? 'var(--ok)' : 'var(--bad)'}">${a.online ? '在线' : '离线'}</span><br>
+          <span class="hint">最后一次上报：${escapeAttr(new Date(a.last_seen * 1000).toLocaleString())}</span>
+        </div>
+        <button class="retire-btn" style="color:var(--bad)">移除</button>
+      </div>
+    </div>
+  `).join('');
+  wrap.querySelectorAll('.retire-btn').forEach(btn => {
+    btn.onclick = () => retireAgent(btn.closest('[data-agent-name]').dataset.agentName);
+  });
+}
+
+async function retireAgent(name){
+  if(!confirm(`把「${name}」移出监控？之后它离线不会再告警。（不会卸载 agent，它要是又上报了会自动回来）`)) return;
+  const res = await fetch(`/api/agents/${encodeURIComponent(name)}/retire`, {method: 'POST'});
+  if(!res.ok){
+    const data = await res.json().catch(() => ({}));
+    alert('移除失败：' + (data.error || res.status));
+  }
+  await loadAgentList();
+}
+
 async function loadAgentHosts(){
   const res = await fetch('/api/agent/hosts');
   const data = await res.json();
@@ -558,6 +601,7 @@ async function deleteHost(id){
 
 load();
 loadAgentHosts();
+loadAgentList();
 loadPasskeys();
 </script>
 </body>

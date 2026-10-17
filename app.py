@@ -21,7 +21,7 @@ from werkzeug.security import check_password_hash
 import webauthn_manager as wam
 from bt_client import BTClient
 from nightcord_status_client import NightcordStatusClient
-from notifier import Notifier, evaluate_alerts, evaluate_agent_alerts
+from notifier import Notifier, evaluate_alerts, plan_agent_alerts
 from auth import BruteForceGuard, get_client_ip
 from config_editor import redact_for_display, merge_submitted
 from agent_deploy import deploy_agent, AgentDeployError
@@ -54,6 +54,7 @@ ALERT_CHECK_INTERVAL = 60  # 秒，后台告警巡检间隔（与前端是否打
 AGENT_STALE_SECONDS = 180  # 秒，青源 agent 超过这么久没上报就不当它在线（默认上报间隔 60s，留够 3 倍余量）
 METRICS_PRUNE_INTERVAL = 3600  # 秒，自建监控 agent 历史数据的清理巡检间隔
 METRICS_REPORT_PATH = "/api/metrics/report"
+AGENT_HEARTBEAT_PATH = "/api/agents/heartbeat"
 QINGYUAN_VERSION = "7.17-beta"  # 青源（自建系统指标监控架构）版本号，见 QINGYUAN.zh-CN.md
 
 
@@ -108,6 +109,8 @@ def enforce_auth():
     """
     if request.path == METRICS_REPORT_PATH:
         return  # agent 机器对机器上报，鉴权走独立的共享密钥（见 api_metrics_report），不走登录态鉴权
+    if request.path == AGENT_HEARTBEAT_PATH:
+        return  # 2702 机器对机器拉取，鉴权走 status_api.token（见 api_agent_heartbeat）
     try:
         cfg = load_config()
     except RuntimeError:
@@ -334,6 +337,24 @@ def fetch_all():
     return results
 
 
+def _agent_states(now):
+    """所有"应该在线"的青源机器的当前状态，看板卡片、告警巡检、2702 心跳接口共用这一份判定。"""
+    states = []
+    for row in metrics_store.list_known_panels():
+        panel = row["panel"]
+        ip = metrics_store.get_ip(panel)
+        states.append({
+            "panel": panel,
+            "seen_at": row["seen_at"],
+            "online": now - row["seen_at"] <= AGENT_STALE_SECONDS,
+            "sample": metrics_store.get_latest(panel),
+            "disk_detail": metrics_store.get_disk_detail(panel),
+            "ip_internal": ip.get("ip_internal"),
+            "ip_external": ip.get("ip_external"),
+        })
+    return states
+
+
 def _merge_qingyuan(results):
     """
     把青源（自建 agent）最新上报的数据叠加进 fetch_all() 的结果里：
@@ -345,6 +366,8 @@ def _merge_qingyuan(results):
       给部署在先的旧 agent、或者没走绑定流程的场景兜底。
     - 名字、IP 都对不上：说明这台机器只装了青源，没有对应的宝塔面板，单独给它造一张卡片，
       否则它在主看板上永远不可见（只能去设置页的"已部署 agent"列表里找）。
+    离线的机器也照样出卡片（灰掉、显示最后一次的数据），不会因为不上报了就从看板上消失；
+    只有在设置页"移除"之后才不再显示。
     """
     by_name = {r.get("name"): r for r in results}
     by_ip = {}
@@ -353,25 +376,25 @@ def _merge_qingyuan(results):
         if host:
             by_ip.setdefault(host, r)
 
-    since_ts = time.time() - AGENT_STALE_SECONDS
-    for panel_name in metrics_store.list_active_panels(since_ts):
-        sample = metrics_store.get_latest(panel_name)
-        if not sample:
-            continue
-        ip = metrics_store.get_ip(panel_name)
+    now = time.time()
+    for state in _agent_states(now):
+        panel_name = state["panel"]
+        sample = state["sample"] or {}
         qingyuan = {
             "cpu": sample.get("cpu"),
             "mem": sample.get("mem"),
             "disk": sample.get("disk"),
-            "disk_detail": metrics_store.get_disk_detail(panel_name),
+            "disk_detail": state["disk_detail"],
             "ts": sample.get("ts"),
-            "ip_internal": ip.get("ip_internal"),
-            "ip_external": ip.get("ip_external"),
+            "ip_internal": state["ip_internal"],
+            "ip_external": state["ip_external"],
+            "online": state["online"],
+            "seen_at": state["seen_at"],
         }
         existing = (
             by_name.get(panel_name)
-            or by_ip.get(ip.get("ip_internal"))
-            or by_ip.get(ip.get("ip_external"))
+            or by_ip.get(state["ip_internal"])
+            or by_ip.get(state["ip_external"])
         )
         if existing is not None:
             existing["qingyuan"] = qingyuan
@@ -379,8 +402,11 @@ def _merge_qingyuan(results):
             results.append({
                 "name": panel_name,
                 "url": None,
-                "online": sample.get("ts", 0) >= since_ts,
-                "error": None,
+                "online": state["online"],
+                "error": None if state["online"] else (
+                    f"青源 agent 超过 {AGENT_STALE_SECONDS // 60} 分钟没有上报，最后一次上报在 "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state['seen_at']))}"
+                ),
                 "kind": "qingyuan-only",
                 "qingyuan": qingyuan,
             })
@@ -429,6 +455,7 @@ def api_metrics_report():
         return jsonify({"error": "缺少 panel"}), 400
 
     metrics_store.insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps)
+    metrics_store.mark_seen(panel, time.time())
     metrics_store.upsert_ip(panel, body.get("ip_internal"), body.get("ip_external"))
 
     disk_detail = body.get("disk_detail")
@@ -462,6 +489,50 @@ def api_metrics_history():
     hours = request.args.get("hours", 24, type=float) or 24
     since_ts = int(time.time() - hours * 3600)
     return jsonify({"panel": panel, "samples": metrics_store.query_history(panel, since_ts)})
+
+
+@app.route(AGENT_HEARTBEAT_PATH)
+def api_agent_heartbeat():
+    """
+    给 2702（Nightcord-Status）的 qingyuan 检测用的只读接口，机器对机器调用：
+    每台机器最后一次上报的时间和在线判定。只给判断"挂没挂"需要的字段，不给 IP、磁盘这些细节。
+    鉴权用 status_api.token（只读用途，跟 agent 上报的 shared_secret 分开，泄露了也写不进数据）。
+    """
+    cfg = load_config().get("status_api", {})
+    if not cfg.get("enabled"):
+        return jsonify({"error": "status_api 未启用"}), 404
+
+    expected = cfg.get("token", "")
+    got = request.headers.get("X-Status-Token", "")
+    if not expected or not hmac.compare_digest(expected, got):
+        return jsonify({"error": "token 不匹配"}), 401
+
+    now = time.time()
+    agents = [
+        {"name": s["panel"], "last_seen": s["seen_at"], "online": s["online"]}
+        for s in _agent_states(now)
+    ]
+    return jsonify({"now": int(now), "stale_seconds": AGENT_STALE_SECONDS, "agents": agents})
+
+
+@app.route("/api/agents")
+def api_agents():
+    """设置页"青源机器"列表：所有还在盯的机器和在线状态。"""
+    now = time.time()
+    return jsonify({"agents": [
+        {"name": s["panel"], "last_seen": s["seen_at"], "online": s["online"]}
+        for s in _agent_states(now)
+    ]})
+
+
+@app.route("/api/agents/<path:name>/retire", methods=["POST"])
+def api_agent_retire(name):
+    """把机器移出监控名单（卸了 agent / 机器退役）。之后它要是又上报了，会自动回到名单里。"""
+    if not metrics_store.retire_panel(name, time.time()):
+        return jsonify({"error": "没有这台机器"}), 404
+    _notifier.forget(name)
+    _cache["data"] = None  # 看板下次刷新就不再显示这张卡
+    return jsonify({"ok": True})
 
 
 @app.route("/")
@@ -702,21 +773,22 @@ def background_alert_loop():
             _notifier.update_config(notif_cfg)
             active_keys = set()
             for panel_result in data:
+                if panel_result.get("kind") == "qingyuan-only":
+                    continue  # 只装了青源的机器由下面的 plan_agent_alerts 统一判断，这里再报就重复了
                 for alert in evaluate_alerts(panel_result, thresholds):
                     active_keys.add(alert["key"])
                     _notifier.notify(alert)
 
-            # 青源（自建 agent）上报的机器不一定跟宝塔面板重名，要单独按最新样本判断阈值。
-            # 只看最近还在上报的面板，避免给早就下线/卸载的 agent 反复报警。
-            for panel_name in metrics_store.list_active_panels(time.time() - AGENT_STALE_SECONDS):
-                sample = metrics_store.get_latest(panel_name)
-                ip = metrics_store.get_ip(panel_name)
-                disk_detail = metrics_store.get_disk_detail(panel_name)
-                for alert in evaluate_agent_alerts(
-                    panel_name, sample, thresholds, ip["ip_external"], ip["ip_internal"], disk_detail,
-                ):
-                    active_keys.add(alert["key"])
-                    _notifier.notify(alert)
+            # 青源（自建 agent）上报的机器不一定跟宝塔面板重名，要单独判断：在线的按最新样本比阈值，
+            # 离线的报离线（全部同时离线时合并成一条）。卸载掉的机器在设置页"移除"后就不再盯。
+            now = time.time()
+            agent_alerts, keep_keys = plan_agent_alerts(
+                _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
+            )
+            active_keys |= keep_keys
+            for alert in agent_alerts:
+                active_keys.add(alert["key"])
+                _notifier.notify(alert)
 
             # 这轮没再出现的 key 就是问题解决了，从"已通知"名单里摘掉，以后再犯还能收到通知
             _notifier.resolve(active_keys)

@@ -52,6 +52,13 @@ metrics_agent:
   # 真实地址（通常是 WireGuard 内网地址），比如 "http://10.10.0.1:1810"。
   report_url: ""
 
+# 给 2702（Nightcord-Status）的 qingyuan 检测用的只读心跳接口：GET /api/agents/heartbeat，
+# 请求头 X-Status-Token 要跟这里的 token 一致。只返回每台机器最后一次上报时间和在线判定，
+# 不含 IP / 磁盘等细节。token 跟 metrics_agent.shared_secret 分开生成，不要复用。
+status_api:
+  enabled: false
+  token: "生成一个随机字符串，2702 那边配置同一个值"
+
 # 告警通知（面板离线 / CPU / 内存 / 磁盘超阈值时推送）
 # 阈值同时适用于宝塔面板和青源（自建 agent，见 metrics_agent 段）上报的机器。
 notifications:
