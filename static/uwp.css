@@ -1,0 +1,223 @@
+/*
+ * Shared Windows 10 (UWP) design tokens, shell and controls for every Panopticon page.
+ * Layout follows the PNS dashboard: a stationary Pivot over the content and, as the one
+ * VS Code-style element, a coloured status bar at the bottom.
+ * Numbers come from the Windows SDK 10.0.26100.0 generic.xaml unless marked "by eye" or
+ * "project". Units: 1 epx = 1 CSS px.
+ */
+
+/* Selawik for Latin only: shared punctuation must come from the CJK face, or Chinese text gets
+   Latin-width ellipses and dashes. Licence: /static/fonts/Selawik-OFL-1.1.txt */
+@font-face{font-family:"Selawik";src:url("/static/fonts/selawik-light.ttf") format("truetype");font-weight:300;font-display:swap;
+  unicode-range:U+0000-00FF,U+0100-024F,U+2013,U+2020-2022,U+2030,U+20AC,U+2122}
+@font-face{font-family:"Selawik";src:url("/static/fonts/selawik-semilight.ttf") format("truetype");font-weight:350;font-display:swap;
+  unicode-range:U+0000-00FF,U+0100-024F,U+2013,U+2020-2022,U+2030,U+20AC,U+2122}
+@font-face{font-family:"Selawik";src:url("/static/fonts/selawik-regular.ttf") format("truetype");font-weight:400;font-display:swap;
+  unicode-range:U+0000-00FF,U+0100-024F,U+2013,U+2020-2022,U+2030,U+20AC,U+2122}
+@font-face{font-family:"Selawik";src:url("/static/fonts/selawik-semibold.ttf") format("truetype");font-weight:600;font-display:swap;
+  unicode-range:U+0000-00FF,U+0100-024F,U+2013,U+2020-2022,U+2030,U+20AC,U+2122}
+
+:root{
+  /* Colour ramp, Default (dark) dictionary. */
+  --SystemBaseHigh:#ffffff;
+  --SystemBaseMediumHigh:rgb(255 255 255 / 0.8);
+  --SystemBaseMedium:rgb(255 255 255 / 0.6);
+  --SystemBaseMediumLow:rgb(255 255 255 / 0.4);
+  --SystemBaseLow:rgb(255 255 255 / 0.2);
+  --SystemAltHigh:#000000;
+  --SystemAltMediumLow:rgb(0 0 0 / 0.4);
+  --SystemChromeLow:#171717;
+  --SystemChromeMediumLow:#2b2b2b;
+  --SystemChromeMedium:#1f1f1f;
+  --SystemChromeHigh:#767676;
+  --SystemChromeGray:#767676;
+  --SystemChromeWhite:#ffffff;
+  --SystemChromeBlackHigh:#000000;
+  --ApplicationPageBackground:var(--SystemAltHigh);
+
+  /* Accent (project): 25時、ナイトコードで。's unit colour, the only hue used for affordance. */
+  --SystemAccent:#884499;
+  --SystemAccentPressed:rgb(136 68 153 / 0.8);  /* by eye, as PNS */
+
+  /* Semantic colours (project, same values as the PNS dashboard). One meaning each, never
+     decoration: ok = healthy (deliberately the accent), caution = near a threshold,
+     warn = needs attention (over a threshold, offline, service down). */
+  --ok:var(--SystemAccent);
+  --caution:#d9a600;
+  --warn:#d13438;
+
+  /* Type ramp */
+  --font:"Selawik","Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;
+  --type-subheader:300 34px/40px var(--font);
+  --type-title:350 24px/28px var(--font);
+  --type-subtitle:400 20px/24px var(--font);
+  --type-base:600 15px/20px var(--font);
+  --type-body:400 15px/20px var(--font);
+  --type-control:400 14px/20px var(--font);
+  --type-caption:400 12px/14px var(--font);
+
+  /* Metrics: 4 epx grid */
+  --page-margin:12px;          /* PivotItemMargin at phone width; widened below */
+  --header-item-margin:12px;   /* PivotHeaderItemMargin 12,0,12,0 */
+  --gutter:12px;
+  --group-gap:24px;
+  --header-gap:8px;            /* control header to control */
+  --control-border:2px;        /* ButtonBorderThemeThickness, TextControlBorderThemeThickness */
+  --control-min-height:32px;   /* TextControlThemeMinHeight */
+  --pivot-header-height:48px;
+  --list-item-min-height:40px;
+  --status-bar-height:40px;    /* AppBarThemeCompactHeight, same as PNS's command bar */
+
+  --decelerate:cubic-bezier(0.1,0.9,0.2,1);
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root{
+    /* Light dictionary. */
+    --SystemBaseHigh:#000000;
+    --SystemBaseMediumHigh:rgb(0 0 0 / 0.8);
+    --SystemBaseMedium:rgb(0 0 0 / 0.6);
+    --SystemBaseMediumLow:rgb(0 0 0 / 0.4);
+    --SystemBaseLow:rgb(0 0 0 / 0.2);
+    --SystemAltHigh:#ffffff;
+    --SystemAltMediumLow:rgb(255 255 255 / 0.4);
+    --SystemChromeLow:#f2f2f2;
+    --SystemChromeMediumLow:#f2f2f2;
+    --SystemChromeMedium:#e6e6e6;
+    --SystemChromeHigh:#cccccc;
+    color-scheme:light;
+  }
+}
+/* The 12 epx margin is a phone metric. UWP window size classes 640 / 1008; widths by eye
+   (same as PNS). */
+@media (min-width:640px){ :root{ --page-margin:24px } }
+@media (min-width:1008px){ :root{ --page-margin:40px } }
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--ApplicationPageBackground);color:var(--SystemBaseHigh);font:400 15px/20px var(--font);
+     font-synthesis:none;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;border-radius:0;padding:0;cursor:pointer}
+a{color:inherit}
+code{font:12px/16px ui-monospace,Menlo,Consolas,monospace}
+/* Keyboard focus visual: 2 epx BaseHigh rectangle (by eye, as PNS). Text fields show focus
+   through their accent border instead. */
+:focus-visible{outline:2px solid var(--SystemBaseHigh);outline-offset:-2px}
+input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
+
+/* ── Shell ── */
+.shell{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.pivot{flex:0 0 auto;padding-top:var(--page-margin)}
+/* PivotTitleFontSize 14 Bold → SemiBold (Selawik has no Bold). Shown because nothing else on
+   screen names the app. */
+.pivot-title{display:flex;align-items:center;gap:8px;margin:0;padding:0 var(--page-margin);font:600 14px/20px var(--font)}
+.pivot-title .back{width:32px;height:32px;margin:-6px 0 -6px -10px;font:400 20px/32px var(--font);text-decoration:none;text-align:center}
+.pivot-title .back[hidden]{display:none}
+/* All header items 24 SemiLight, selected BaseHigh, others BaseMedium, spacing -25/1000 em,
+   strip 48 high. Every header fits, so the pivot is stationary. */
+.pivot-headers{height:var(--pivot-header-height);display:flex;align-items:stretch;
+               padding:0 calc(var(--page-margin) - var(--header-item-margin));overflow-x:auto;scrollbar-width:none}
+.pivot-headers::-webkit-scrollbar{display:none}
+.pivot-header-item{flex:0 0 auto;display:flex;align-items:center;padding:0 var(--header-item-margin);
+                   color:var(--SystemBaseMedium);font:var(--type-title);letter-spacing:-0.025em;white-space:nowrap;text-decoration:none}
+.pivot-header-item[aria-selected="true"]{color:var(--SystemBaseHigh);cursor:default}
+.pivot-header-item:not([aria-selected="true"]):hover{color:var(--SystemBaseMediumHigh)} /* by eye */
+.content{flex:1;min-height:0;overflow:auto;padding:0 var(--page-margin) var(--group-gap);touch-action:pan-y}
+/* Page refresh entrance: slide up + fade (distance / duration / stagger by eye). */
+@keyframes enter{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:none}}
+.entering{animation:enter 300ms var(--decelerate) both}
+
+/* Status bar: the VS Code element. Accent fill, white Control text, items lighten on hover.
+   The leftmost segment turns warn-red with a count when something needs attention. */
+.status-bar{flex:0 0 var(--status-bar-height);display:flex;align-items:stretch;
+            background:var(--SystemAccent);color:var(--SystemChromeWhite);font:var(--type-control)}
+.status-item{display:flex;align-items:center;gap:6px;padding:0 var(--gutter);white-space:nowrap;color:inherit;text-decoration:none}
+button.status-item:hover,a.status-item:hover{background:rgb(255 255 255 / 0.12)} /* by eye */
+.status-alert{background:var(--warn)}
+.status-alert[hidden]{display:none}
+.status-spacer{flex:1}
+@media (max-width:640px){ .status-optional{display:none} }
+
+/* ── Text ── */
+.group{margin-top:var(--group-gap)}
+.group-header{font:var(--type-base);margin-bottom:var(--header-gap)}
+.description{font:var(--type-body);line-height:24px;color:var(--SystemBaseMediumHigh);max-width:720px;margin-bottom:var(--gutter)}
+.caption{font:var(--type-caption);color:var(--SystemBaseMedium)}
+.empty-hint{padding:var(--gutter) 0;color:var(--SystemBaseMedium)}
+.notice{padding:8px 12px;margin-top:var(--gutter);background:var(--SystemChromeMediumLow)}
+.ok{color:var(--ok)} .caution{color:var(--caution)} .warn{color:var(--warn)}
+
+/* ── Controls ── */
+/* Button: fill BaseLow, pressed BaseMediumLow, 2 epx transparent border, ButtonPadding 8,4,8,5,
+   no radius, Control 14. */
+.btn{min-height:var(--control-min-height);padding:4px 8px 5px;border:var(--control-border) solid transparent;
+     background:var(--SystemBaseLow);color:var(--SystemBaseHigh);font:var(--type-control);text-align:center}
+.btn:hover:not(:disabled){border-color:var(--SystemBaseMediumLow)}   /* by eye */
+.btn:active:not(:disabled){background:var(--SystemBaseMediumLow);border-color:transparent}
+.btn:disabled{color:var(--SystemBaseMediumLow);cursor:default}
+/* AccentButtonStyle: the one primary command on a surface. */
+.btn-accent{background:var(--SystemAccent);color:var(--SystemChromeWhite)}
+.btn-accent:active:not(:disabled){background:var(--SystemAccentPressed)}
+.btn-danger{color:var(--warn)}
+/* Text-only command. No fill at rest; BaseLow on hover, BaseMediumLow pressed (by eye). */
+.command{min-height:var(--control-min-height);padding:0 var(--gutter);font:var(--type-control);white-space:nowrap}
+.command:hover:not(:disabled){background:var(--SystemBaseLow)}
+.command:active:not(:disabled){background:var(--SystemBaseMediumLow)}
+.text-command{font:var(--type-control);color:var(--SystemBaseMedium)}
+.text-command:hover{color:var(--SystemBaseHigh)}
+
+/* TextBox / ComboBox: rest 2 epx BaseMediumLow border over AltMediumLow; focused TextBox: white
+   fill, black text, accent border. TextControlThemePadding 10,3,6,6, MinHeight 32. */
+input:not([type=checkbox]):not([type=radio]),select,textarea{
+  width:100%;min-height:var(--control-min-height);padding:3px 6px 6px 10px;
+  border:var(--control-border) solid var(--SystemBaseMediumLow);border-radius:0;
+  background:var(--SystemAltMediumLow);color:var(--SystemBaseHigh);font:var(--type-control)}
+input:not([type=checkbox]):not([type=radio]):hover,select:hover,textarea:hover{border-color:var(--SystemBaseMedium)} /* by eye */
+input:not([type=checkbox]):not([type=radio]):focus,textarea:focus{
+  border-color:var(--SystemAccent);background:var(--SystemChromeWhite);color:var(--SystemChromeBlackHigh)}
+select{appearance:none;-webkit-appearance:none;padding-right:32px;cursor:pointer;
+  background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+  background-position:calc(100% - 17px) 50%,calc(100% - 12px) 50%;background-size:5px 5px;background-repeat:no-repeat} /* chevron by eye */
+select:focus{border-color:var(--SystemAccent)}
+::placeholder{color:var(--SystemBaseMedium);opacity:1}
+input:focus::placeholder{color:var(--SystemChromeHigh)}
+
+/* Control header above the field, 8 clear of it. */
+.field{display:flex;flex-direction:column;gap:var(--header-gap);margin-bottom:var(--gutter);font:var(--type-control)}
+.field-hint{font:var(--type-caption);color:var(--SystemBaseMedium)}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));column-gap:var(--group-gap);max-width:760px}
+
+/* CheckBox: 20 box, 2 stroke BaseMediumHigh; checked = accent fill with a white mark (mark by
+   eye; the original uses a glyph). Label 8 to the right. */
+.check{display:flex;align-items:center;gap:8px;min-height:32px;cursor:pointer;font:var(--type-control);margin-bottom:4px}
+.check input{appearance:none;-webkit-appearance:none;flex:0 0 auto;width:20px;height:20px;margin:0;
+             border:2px solid var(--SystemBaseMediumHigh);display:grid;place-content:center;cursor:pointer}
+.check input::before{content:"";width:10px;height:5px;border:solid var(--SystemChromeWhite);border-width:0 0 2px 2px;
+                     transform:translateY(-1px) rotate(-45deg) scale(0)}
+.check input:checked{background:var(--SystemAccent);border-color:var(--SystemAccent)}
+.check input:checked::before{transform:translateY(-1px) rotate(-45deg) scale(1)}
+
+/* RadioButton: 20 ring, 2 stroke BaseMediumHigh; selected ring accent + 10 dot; label 8 right. */
+.radios{display:flex;flex-wrap:wrap;gap:4px 24px;margin:var(--gutter) 0}
+.radio{display:flex;align-items:center;gap:8px;min-height:32px;cursor:pointer;font:var(--type-control)}
+.radio input{appearance:none;-webkit-appearance:none;margin:0;width:20px;height:20px;border-radius:50%;
+             border:2px solid var(--SystemBaseMediumHigh);display:grid;place-content:center;cursor:pointer}
+.radio input::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--SystemBaseMediumHigh);transform:scale(0)}
+.radio input:checked{border-color:var(--SystemAccent)}
+.radio input:checked::before{transform:scale(1)}
+
+/* ProgressBar: 4 high (ProgressBarThemeMinHeight), track BaseLow, fill accent. */
+.progress{height:4px;background:var(--SystemBaseLow);margin-top:4px}
+.progress>span{display:block;height:100%;background:var(--ok)}
+.progress.caution>span{background:var(--caution)}
+.progress.warn>span{background:var(--warn)}
+
+/* List items: 40 high, pointer-over BaseLow-ish (by eye). */
+.list-item{min-height:var(--list-item-min-height);display:flex;justify-content:space-between;align-items:center;gap:var(--gutter);padding:4px 0}
+.list-item .actions{display:flex;gap:8px;flex:0 0 auto}
+
+.log{max-height:240px;overflow:auto;padding:8px;background:var(--SystemChromeLow);
+     font:12px/16px ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+.log[hidden]{display:none}
+
+@media (prefers-reduced-motion: reduce){ .entering{animation:none} }

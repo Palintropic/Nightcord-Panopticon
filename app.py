@@ -423,18 +423,24 @@ def _merge_qingyuan(results):
             })
 
 
+def _thresholds():
+    """前端磁贴变红用的阈值，跟告警巡检读同一份配置，看板上的红色和收到的告警永远一致。"""
+    th = (load_config().get("notifications") or {}).get("thresholds") or {}
+    return {"cpu": th.get("cpu", 90), "mem": th.get("mem", 90), "disk": th.get("disk", 85)}
+
+
 @app.route("/api/status")
 def api_status():
     now = time.time()
     if _cache["data"] is not None and now - _cache["ts"] < CACHE_TTL:
-        return jsonify({"panels": _cache["data"], "cached": True, "ts": _cache["ts"]})
+        return jsonify({"panels": _cache["data"], "cached": True, "ts": _cache["ts"], "thresholds": _thresholds()})
     try:
         data = fetch_all()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
     _cache["data"] = data
     _cache["ts"] = now
-    return jsonify({"panels": data, "cached": False, "ts": now})
+    return jsonify({"panels": data, "cached": False, "ts": now, "thresholds": _thresholds()})
 
 
 @app.route(METRICS_REPORT_PATH, methods=["POST"])
