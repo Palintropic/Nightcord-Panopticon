@@ -48,7 +48,7 @@ CACHE_TTL = 10  # 秒
 
 # 常驻一个 Notifier 实例，不要在 background_alert_loop 每轮里 new 一个新的——
 # 那样它内部记的"这个问题已经通知过"的状态每 60 秒就被清空一次，等于永远发不完。
-_notifier = Notifier({})
+_notifier = Notifier({}, is_watched=metrics_store.all_watched)
 
 ALERT_CHECK_INTERVAL = 60  # 秒，后台告警巡检间隔（与前端是否打开无关）
 AGENT_STALE_SECONDS = 180  # 秒，青源 agent 超过这么久没上报就不当它在线（默认上报间隔 60s，留够 3 倍余量）
@@ -788,16 +788,10 @@ def background_alert_loop():
                 _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
             )
             active_keys |= keep_keys
-            # 算计划和发通知之间可能刚好有人点了"移除"：发之前按数据库重新核对一次名单，
-            # 再把成员已被移除的旧告警静默作废，不然它们会在下面的 resolve() 里被当成"已恢复"
-            watched = {row["panel"] for row in metrics_store.list_known_panels()}
-            still_watched = lambda panels: all(p in watched for p in panels)
+            # 期间有人点了"移除"也没关系：Notifier 在每次发送那一刻现查名单（见 Notifier.is_watched）
             for alert in agent_alerts:
-                if not still_watched(alert["panels"]):
-                    continue
                 active_keys.add(alert["key"])
                 _notifier.notify(alert)
-            _notifier.forget_retired(still_watched)
 
             # 这轮没再出现的 key 就是问题解决了，从"已通知"名单里摘掉，以后再犯还能收到通知
             _notifier.resolve(active_keys)

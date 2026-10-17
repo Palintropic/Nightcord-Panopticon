@@ -29,7 +29,7 @@ class PlanAgentAlertsTests(unittest.TestCase):
 
     def test_all_offline_collapses_into_one_alert(self):
         alerts, _ = self.plan([state("tokyo", 600), state("shanghai", 600), state("FreePBX", 600)])
-        self.assertEqual([a["key"] for a in alerts], [ALL_OFFLINE_KEY])
+        self.assertEqual([a["key"] for a in alerts], [f"{ALL_OFFLINE_KEY}:FreePBX|shanghai|tokyo"])
 
     def test_single_machine_offline_is_not_treated_as_all_offline(self):
         alerts, _ = self.plan([state("tokyo", 600)])
@@ -46,8 +46,11 @@ class PlanAgentAlertsTests(unittest.TestCase):
 
 
 class RecordingNotifier(Notifier):
-    def __init__(self):
-        super().__init__({"cooldown_seconds": 0})
+    def __init__(self, watched=None):
+        # watched：模拟持久化名单（别的进程移除机器时只改它，不调用本对象的 forget）
+        self.watched = watched
+        super().__init__({"cooldown_seconds": 0},
+                         is_watched=None if watched is None else (lambda panels: all(p in self.watched for p in panels)))
         self.sent = []
 
     def _send_feishu(self, alert, template="red", mention_all=True):
@@ -102,21 +105,36 @@ class RecoveryTests(unittest.TestCase):
         n.resolve(set())
         self.assertEqual(n.sent, [("全部机器同时失联", "red")])
 
-    def test_forget_retired_uses_persisted_watch_list(self):
-        # 模拟移除请求跑在别的进程：这个 Notifier 没被调用 forget()，只靠巡检时查到的名单
-        n = RecordingNotifier()
-        n.notify(alert("tokyo-agent-offline"))
-        n.notify(alert("shanghai-agent-cpu", server="shanghai", alert_type="CPU高占用告警"))
-        watched = {"shanghai"}
-        n.forget_retired(lambda panels: all(p in watched for p in panels))
-        n.resolve({"shanghai-agent-cpu"})
-        self.assertEqual(len(n.sent), 2)
+    def test_retired_elsewhere_before_recovery_is_silent(self):
+        n = RecordingNotifier(watched={"tokyo", "shanghai"})
+        n.notify(alert("tokyo-agent-cpu", alert_type="CPU高占用告警"))
+        n.watched.discard("tokyo")      # 另一个进程移除了 tokyo，没调用本对象的 forget()
+        n.resolve(set())                # 本轮 CPU 正常 / 机器不在名单
+        self.assertEqual(n.sent, [("CPU高占用告警", "red")])
 
-    def test_bt_alerts_without_panels_are_untouched_by_forget_retired(self):
-        n = RecordingNotifier()
+    def test_retired_elsewhere_before_notify_is_not_sent(self):
+        n = RecordingNotifier(watched={"shanghai"})
+        n.notify(alert("tokyo-agent-offline"))
+        self.assertEqual(n.sent, [])
+        self.assertFalse(n.is_active("tokyo-agent-offline"))
+
+    def test_bt_alerts_without_panels_ignore_watch_list(self):
+        n = RecordingNotifier(watched=set())
         n.notify({"key": "上海-offline", "server": "上海", "alert_type": "面板离线告警", "content": "x"})
-        n.forget_retired(lambda panels: False)
-        self.assertTrue(n.is_active("上海-offline"))
+        n.resolve(set())
+        self.assertEqual(n.sent, [("面板离线告警", "red"), ("面板离线告警已恢复", "green")])
+
+    def test_merged_alert_with_new_members_is_a_new_alert(self):
+        n = RecordingNotifier(watched={"a", "b", "c"})
+        n.cooldown = 600
+        first, _ = plan_agent_alerts([state("a", 600), state("b", 600), state("c", 600)], {}, NOW, STALE, no_active)
+        n.notify(first[0])
+        n.watched.discard("a")
+        second, _ = plan_agent_alerts([state("b", 600), state("c", 600)], {}, NOW, STALE, no_active)
+        n.notify(second[0])
+        n.resolve({second[0]["key"]})
+        self.assertEqual(n.sent, [("全部机器同时失联", "red"), ("全部机器同时失联", "red")])
+        self.assertTrue(n.is_active(second[0]["key"]))
 
     def test_planned_alerts_name_their_panels(self):
         alerts, _ = plan_agent_alerts([state("tokyo", 600), state("shanghai", 600)], {}, NOW, STALE, no_active)

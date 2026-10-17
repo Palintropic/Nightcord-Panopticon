@@ -15,7 +15,7 @@ UNKNOWN_IP = "未知"
 
 
 class Notifier:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, is_watched=None):
         """
         config 形如:
         {
@@ -27,6 +27,11 @@ class Notifier:
         """
         self.config = config or {}
         self.cooldown = self.config.get("cooldown_seconds", 600)
+        # is_watched(panels) -> bool：这些青源机器现在是否都还在监控名单里（每次调用都现查持久化名单）。
+        # 发任何牵涉青源机器的通知前都在发送那一刻问一次——这一刻就是"移除"和"通知"之间的先后分界：
+        # 在它之前移除的，通知作废（告警不发、恢复静默丢弃）；在它之后才移除的，本来就排在这条通知后面。
+        # 这样移除请求跑在别的进程、或者插在巡检中途，都不会被当成恢复。
+        self._is_watched = is_watched
         self._last_sent = {}  # key -> 上次通知时间戳，问题解决后又复发时用来防抖
         # 当前"已经通知过、问题还没解决"的告警：key -> 发出时的 alert dict。
         # 同一个问题只发一次；问题解决时用存下来的 alert 拼"已恢复"通知。
@@ -67,6 +72,8 @@ class Notifier:
         with self._lock:
             resolved = [self._active.pop(k) for k in list(self._active) if k not in still_active_keys]
         for alert in resolved:
+            if not self._watched(alert):
+                continue  # 牵涉的机器已被移除：它没恢复，只是不再盯了，不发"已恢复"
             recovery = dict(alert)
             recovery["alert_type"] = f"{alert['alert_type']}已恢复"
             recovery["content"] = f"{alert['content']}\n\n问题已解除，持续约 {_format_duration(now - alert['notified_at'])}。"
@@ -79,22 +86,18 @@ class Notifier:
 
     def forget(self, panel: str):
         """
-        机器被移除时调用：悄悄丢掉牵涉到它的所有未解决告警，不发"已恢复"（它没恢复，只是不再盯了）。
-        "全部机器同时失联"这种合并告警也算牵涉——成员变了，那条告警就不再成立。
-        """
-        self.forget_retired(lambda panels: panel not in panels)
-
-    def forget_retired(self, is_still_watched):
-        """
-        巡检每轮调用：按数据库里的持久化名单，悄悄丢掉成员已被移除的青源告警。
-        设置页的移除请求可能跑在另一个进程里（Gunicorn + worker.py），它的 forget() 碰不到
-        这里的内存状态；也可能刚好插在"算完告警计划"和"发出去"之间。两种情况都靠这里兜底，
-        保证移除永远不会被当成恢复。is_still_watched(panels) 返回 False 表示该告警作废。
+        同进程里的移除请求调用：立刻悄悄丢掉牵涉到这台机器的未解决告警（含合并告警）。
+        只是让内存状态马上干净；正确性不靠它——跨进程的移除由发送前的 is_watched 检查兜底。
         """
         with self._lock:
-            for key in [k for k, a in self._active.items()
-                        if a.get("panels") is not None and not is_still_watched(a["panels"])]:
+            for key in [k for k, a in self._active.items() if panel in (a.get("panels") or [])]:
                 del self._active[key]
+
+    def _watched(self, alert: dict) -> bool:
+        panels = alert.get("panels")
+        if panels is None or self._is_watched is None:
+            return True  # 宝塔面板等非青源告警不受监控名单约束
+        return self._is_watched(panels)
 
     def notify(self, alert: dict):
         """
@@ -108,6 +111,8 @@ class Notifier:
           "ip_internal": "172.31.47.45" 或 None,
         }
         """
+        if not self._watched(alert):
+            return  # 牵涉的机器在发送这一刻已经不在名单里了
         with self._lock:
             if not self._should_send(alert["key"]):
                 return
@@ -301,7 +306,7 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
         return {
             "key": f"{panel_name}-{suffix}",
             "server": panel_name,
-            "panels": [panel_name],  # 牵涉的青源机器，移除机器时据此静默作废（见 Notifier.forget_retired）
+            "panels": [panel_name],  # 牵涉的青源机器，移除机器时据此静默作废（见 Notifier.is_watched）
             "alert_type": alert_type,
             "content": content,
             "ip_external": ip_external,
@@ -353,7 +358,9 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
     if len(states) >= 2 and len(offline) == len(states):
         names = "、".join(s["panel"] for s in states)
         alerts.append({
-            "key": ALL_OFFLINE_KEY,
+            # 成员写进 key：成员变了（比如其中一台被移除）就是一条新的合并告警，
+            # 不会被旧告警的去重和冷却吞掉；旧的那条在 resolve 时因成员被移除而静默作废
+            "key": f"{ALL_OFFLINE_KEY}:{'|'.join(sorted(s['panel'] for s in states))}",
             "server": "全部青源机器",
             "panels": [s["panel"] for s in states],
             "alert_type": "全部机器同时失联",

@@ -314,7 +314,8 @@ function renderCard(p, idx){
         ? [{path: '/', total: null, used: null, percent: qingyuan.disk}]
         : null);
   let body = '';
-  if(!online){
+  if(p.online === false){
+    // 只看卡片自己的连接状态；宝塔连得上、只是挂在上面的青源停报时，由下面的 qingyuanStale 单独提示
     body += `<div class="err">${escapeHtml(p.error || (p.kind === 'qingyuan-only' ? '青源 agent 已超过 3 分钟没有上报' : '无法连接该面板'))}</div>`;
   }
   if(qingyuanStale){

@@ -45,6 +45,14 @@ class KnownPanelsTests(unittest.TestCase):
         metrics_store.mark_seen("old-host", 1200)
         self.assertEqual(metrics_store.list_known_panels(), [{"panel": "old-host", "seen_at": 1200}])
 
+    def test_all_watched_reflects_retirement_immediately(self):
+        metrics_store.mark_seen("a", 1000)
+        metrics_store.mark_seen("b", 1000)
+        self.assertTrue(metrics_store.all_watched(["a", "b"]))
+        metrics_store.retire_panel("a", 1001)
+        self.assertFalse(metrics_store.all_watched(["a", "b"]))
+        self.assertFalse(metrics_store.all_watched(["never-reported"]))
+
     def test_retiring_unknown_panel_is_refused(self):
         self.assertFalse(metrics_store.retire_panel("nobody", 1000))
 

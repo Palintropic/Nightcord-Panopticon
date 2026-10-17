@@ -118,6 +118,24 @@ def list_known_panels():
         return [dict(r) for r in rows]
 
 
+def all_watched(panels):
+    """这些机器是否都还在监控名单里（上报过、且当前没有移除记录）。发通知前的现查用。"""
+    panels = set(panels)
+    if not panels:
+        return True
+    with _connect() as conn:
+        placeholders = ",".join("?" * len(panels))
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM agent_last_seen s
+            LEFT JOIN agent_retired r ON r.panel = s.panel
+            WHERE r.panel IS NULL AND s.panel IN ({placeholders})
+            """,
+            tuple(panels),
+        ).fetchone()
+        return row[0] == len(panels)
+
+
 def retire_panel(panel, retired_at):
     """把机器移出"应该在线"的名单。只认上报过的机器，返回是否真的移除了。"""
     with _connect() as conn:
