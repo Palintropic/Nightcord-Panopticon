@@ -2,6 +2,7 @@
 告警通知模块：支持飞书自定义机器人 Webhook 与 SMTP 邮件。
 两个通道都是"尽力而为"——某一个失败不影响另一个，也不影响主流程。
 """
+import json
 import smtplib
 import threading
 import time
@@ -15,7 +16,7 @@ UNKNOWN_IP = "未知"
 
 
 class Notifier:
-    def __init__(self, config: dict, is_watched=None):
+    def __init__(self, config: dict, watch_generations=None):
         """
         config 形如:
         {
@@ -27,11 +28,12 @@ class Notifier:
         """
         self.config = config or {}
         self.cooldown = self.config.get("cooldown_seconds", 600)
-        # is_watched(panels) -> bool：这些青源机器现在是否都还在监控名单里（每次调用都现查持久化名单）。
+        # watch_generations(panels) -> {panel: 代次} 或 None：现查持久化名单（metrics_store.watch_generations）。
         # 发任何牵涉青源机器的通知前都在发送那一刻问一次——这一刻就是"移除"和"通知"之间的先后分界：
         # 在它之前移除的，通知作废（告警不发、恢复静默丢弃）；在它之后才移除的，本来就排在这条通知后面。
+        # 告警发出时记下代次，恢复时代次对不上（中间移除过，哪怕又回来了）也静默丢弃。
         # 这样移除请求跑在别的进程、或者插在巡检中途，都不会被当成恢复。
-        self._is_watched = is_watched
+        self._watch_generations = watch_generations
         self._last_sent = {}  # key -> 上次通知时间戳，问题解决后又复发时用来防抖
         # 当前"已经通知过、问题还没解决"的告警：key -> 发出时的 alert dict。
         # 同一个问题只发一次；问题解决时用存下来的 alert 拼"已恢复"通知。
@@ -72,8 +74,8 @@ class Notifier:
         with self._lock:
             resolved = [self._active.pop(k) for k in list(self._active) if k not in still_active_keys]
         for alert in resolved:
-            if not self._watched(alert):
-                continue  # 牵涉的机器已被移除：它没恢复，只是不再盯了，不发"已恢复"
+            if "generations" in alert and self._current_generations(alert) != alert["generations"]:
+                continue  # 牵涉的机器移除过：它没恢复，只是不再盯了（或已是新一代），不发"已恢复"
             recovery = dict(alert)
             recovery["alert_type"] = f"{alert['alert_type']}已恢复"
             recovery["content"] = f"{alert['content']}\n\n问题已解除，持续约 {_format_duration(now - alert['notified_at'])}。"
@@ -87,17 +89,23 @@ class Notifier:
     def forget(self, panel: str):
         """
         同进程里的移除请求调用：立刻悄悄丢掉牵涉到这台机器的未解决告警（含合并告警）。
-        只是让内存状态马上干净；正确性不靠它——跨进程的移除由发送前的 is_watched 检查兜底。
+        只是让内存状态马上干净；正确性不靠它——跨进程的移除由发送前的代次检查兜底。
         """
         with self._lock:
             for key in [k for k, a in self._active.items() if panel in (a.get("panels") or [])]:
                 del self._active[key]
 
-    def _watched(self, alert: dict) -> bool:
+    def forget_keys(self, keys):
+        """静默作废指定告警（被新的合并告警取代、又没有成员恢复时用），不发"已恢复"。"""
+        with self._lock:
+            for key in keys:
+                self._active.pop(key, None)
+
+    def _current_generations(self, alert: dict):
         panels = alert.get("panels")
-        if panels is None or self._is_watched is None:
-            return True  # 宝塔面板等非青源告警不受监控名单约束
-        return self._is_watched(panels)
+        if panels is None or self._watch_generations is None:
+            return {}  # 宝塔面板等非青源告警不受监控名单约束
+        return self._watch_generations(panels)
 
     def notify(self, alert: dict):
         """
@@ -111,12 +119,13 @@ class Notifier:
           "ip_internal": "172.31.47.45" 或 None,
         }
         """
-        if not self._watched(alert):
+        generations = self._current_generations(alert)
+        if generations is None:
             return  # 牵涉的机器在发送这一刻已经不在名单里了
         with self._lock:
             if not self._should_send(alert["key"]):
                 return
-            self._active[alert["key"]] = dict(alert, notified_at=time.time())
+            self._active[alert["key"]] = dict(alert, notified_at=time.time(), generations=generations)
         self._send_feishu(alert)
         self._send_email(alert)
 
@@ -306,7 +315,7 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
         return {
             "key": f"{panel_name}-{suffix}",
             "server": panel_name,
-            "panels": [panel_name],  # 牵涉的青源机器，移除机器时据此静默作废（见 Notifier.is_watched）
+            "panels": [panel_name],  # 牵涉的青源机器，移除机器时据此静默作废（见 Notifier.watch_generations）
             "alert_type": alert_type,
             "content": content,
             "ip_external": ip_external,
@@ -334,34 +343,54 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
 
 
 ALL_OFFLINE_KEY = "qingyuan-all-offline"
+ALL_OFFLINE_SERVER = "全部青源机器"
+
+
+def merged_offline_key(panels):
+    # 成员用排序后的 JSON 编码：机器名里带什么字符都不会让两组不同的成员撞成同一个 key
+    return f"{ALL_OFFLINE_KEY}:{json.dumps(sorted(panels), ensure_ascii=False)}"
+
+
+def merged_offline_members(key):
+    return json.loads(key[len(ALL_OFFLINE_KEY) + 1:])
 
 
 def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, active_keys_for):
     """
-    一轮巡检里所有青源机器的告警计划，返回 (alerts, keep_keys)。
+    一轮巡检里所有青源机器的告警计划，返回 (alerts, keep_keys, drop_keys)。
     - alerts：这轮要交给 Notifier.notify() 的告警。
     - keep_keys：这轮没产出、但不能当成"已恢复"的 key。机器离线时拿不到新样本，
       它之前的 CPU/磁盘告警既不能算恢复也不能重发，原样保留到它重新上报为止。
+    - drop_keys：要静默作废的旧合并告警。合并告警只有在它自己的成员里有机器重新在线时才算恢复；
+      成员集合变了（有机器加入或被移除）而成员一台都没回来，旧的那条只是被取代，不是恢复。
     states 每项形如 {"panel", "seen_at", "sample", "ip_external", "ip_internal", "disk_detail"}。
     active_keys_for(server) 返回该机器名下当前未解决的告警 key（Notifier.active_keys_for）。
 
     所有机器同时离线（至少两台）时只发一条合并告警：大概率是 Panopticon 自己这边断网 /
     WireGuard 掉了，而不是每台机器都挂了，分开报只会一下子刷屏。
     """
-    alerts, keep_keys = [], set()
+    alerts, keep_keys, drop_keys = [], set(), set()
     offline = [s for s in states if now - s["seen_at"] > stale_seconds]
     offline_panels = {s["panel"] for s in offline}
+    online_panels = {s["panel"] for s in states} - offline_panels
 
     for s in offline:
         keep_keys |= set(active_keys_for(s["panel"]))
 
-    if len(states) >= 2 and len(offline) == len(states):
+    all_offline = len(states) >= 2 and len(offline) == len(states)
+    new_merged_key = merged_offline_key(s["panel"] for s in states) if all_offline else None
+    for key in active_keys_for(ALL_OFFLINE_SERVER):
+        if key == new_merged_key:
+            continue
+        if not set(merged_offline_members(key)) & online_panels:
+            drop_keys.add(key)
+
+    if all_offline:
         names = "、".join(s["panel"] for s in states)
         alerts.append({
-            # 成员写进 key：成员变了（比如其中一台被移除）就是一条新的合并告警，
-            # 不会被旧告警的去重和冷却吞掉；旧的那条在 resolve 时因成员被移除而静默作废
-            "key": f"{ALL_OFFLINE_KEY}:{'|'.join(sorted(s['panel'] for s in states))}",
-            "server": "全部青源机器",
+            # 成员写进 key：成员变了就是一条新的合并告警，不会被旧告警的去重和冷却吞掉
+            "key": new_merged_key,
+            "server": ALL_OFFLINE_SERVER,
             "panels": [s["panel"] for s in states],
             "alert_type": "全部机器同时失联",
             "content": f"{names} 都超过 {stale_seconds // 60} 分钟没有上报。"
@@ -369,7 +398,7 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
             "ip_external": None,
             "ip_internal": None,
         })
-        return alerts, keep_keys
+        return alerts, keep_keys, drop_keys
 
     for s in states:
         if s["panel"] in offline_panels:
@@ -388,4 +417,4 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
                 s["panel"], s.get("sample"), thresholds,
                 s.get("ip_external"), s.get("ip_internal"), s.get("disk_detail"),
             ))
-    return alerts, keep_keys
+    return alerts, keep_keys, drop_keys

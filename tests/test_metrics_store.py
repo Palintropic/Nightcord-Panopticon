@@ -45,13 +45,24 @@ class KnownPanelsTests(unittest.TestCase):
         metrics_store.mark_seen("old-host", 1200)
         self.assertEqual(metrics_store.list_known_panels(), [{"panel": "old-host", "seen_at": 1200}])
 
-    def test_all_watched_reflects_retirement_immediately(self):
+    def test_watch_generations_track_retirement(self):
         metrics_store.mark_seen("a", 1000)
         metrics_store.mark_seen("b", 1000)
-        self.assertTrue(metrics_store.all_watched(["a", "b"]))
+        self.assertEqual(metrics_store.watch_generations(["a", "b"]), {"a": 0, "b": 0})
         metrics_store.retire_panel("a", 1001)
-        self.assertFalse(metrics_store.all_watched(["a", "b"]))
-        self.assertFalse(metrics_store.all_watched(["never-reported"]))
+        self.assertIsNone(metrics_store.watch_generations(["a", "b"]))
+        metrics_store.mark_seen("a", 1002)  # 回来了，但已经是新的一代
+        self.assertEqual(metrics_store.watch_generations(["a"]), {"a": 1})
+        self.assertIsNone(metrics_store.watch_generations(["never-reported"]))
+
+    def test_init_adds_generation_column_to_old_table(self):
+        import sqlite3
+        with sqlite3.connect(metrics_store.DB_PATH) as conn:
+            conn.execute("DROP TABLE agent_last_seen")
+            conn.execute("CREATE TABLE agent_last_seen (panel TEXT PRIMARY KEY, seen_at INTEGER NOT NULL)")
+            conn.execute("INSERT INTO agent_last_seen VALUES ('old', 1000)")
+        metrics_store.init_db()
+        self.assertEqual(metrics_store.watch_generations(["old"]), {"old": 0})
 
     def test_retiring_unknown_panel_is_refused(self):
         self.assertFalse(metrics_store.retire_panel("nobody", 1000))

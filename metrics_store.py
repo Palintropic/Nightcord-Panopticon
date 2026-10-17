@@ -37,9 +37,12 @@ CREATE TABLE IF NOT EXISTS agent_disk_detail (
 
 -- 每台机器最后一次上报的时间（Panopticon 收到上报时的服务器时间，不用 agent 自报的 ts，
 -- 免得 agent 时钟漂移导致误判离线）。不随 metrics 历史一起清理：离线再久也还记得这台机器。
+-- generation：监控代次，每"移除"一次加 1。告警发出时记下当时的代次，代次变了的旧告警永远作废，
+-- 这样"移除 → 又上报回来"之后，移除之前的旧告警不会被当成恢复。
 CREATE TABLE IF NOT EXISTS agent_last_seen (
   panel TEXT PRIMARY KEY,
-  seen_at INTEGER NOT NULL
+  seen_at INTEGER NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0
 );
 
 -- 在设置页"移除"掉的机器。它之后只要再上报一次，记录就会在同一个事务里被删掉，自动回到名单里。
@@ -59,6 +62,9 @@ def _connect():
 def init_db():
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        columns = [r["name"] for r in conn.execute("PRAGMA table_info(agent_last_seen)")]
+        if "generation" not in columns:  # 早期版本建的表没有这一列
+            conn.execute("ALTER TABLE agent_last_seen ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
         # 升级前就在上报的机器还没有 agent_last_seen 记录，用历史里最新一条样本补上，
         # 否则它们要等下一次上报才会出现在"应该在线"的名单里。历史里的 ts 是 agent 自报的，
         # 时钟跑快的 agent 会留下未来时间，回填时封顶到现在，不然它停报后会一直显示在线
@@ -118,22 +124,27 @@ def list_known_panels():
         return [dict(r) for r in rows]
 
 
-def all_watched(panels):
-    """这些机器是否都还在监控名单里（上报过、且当前没有移除记录）。发通知前的现查用。"""
+def watch_generations(panels):
+    """
+    发通知前的现查：这些机器都还在监控名单里时返回 {panel: 监控代次}，有任何一台不在（没上报过 /
+    当前被移除）就返回 None。调用方拿发送时记下的代次跟恢复时的比，不一样就说明中间移除过。
+    """
     panels = set(panels)
     if not panels:
-        return True
+        return {}
     with _connect() as conn:
         placeholders = ",".join("?" * len(panels))
-        row = conn.execute(
+        rows = conn.execute(
             f"""
-            SELECT COUNT(*) FROM agent_last_seen s
+            SELECT s.panel, s.generation FROM agent_last_seen s
             LEFT JOIN agent_retired r ON r.panel = s.panel
             WHERE r.panel IS NULL AND s.panel IN ({placeholders})
             """,
             tuple(panels),
-        ).fetchone()
-        return row[0] == len(panels)
+        ).fetchall()
+        if len(rows) != len(panels):
+            return None
+        return {r["panel"]: r["generation"] for r in rows}
 
 
 def retire_panel(panel, retired_at):
@@ -149,6 +160,7 @@ def retire_panel(panel, retired_at):
             """,
             (panel, int(retired_at)),
         )
+        conn.execute("UPDATE agent_last_seen SET generation = generation + 1 WHERE panel = ?", (panel,))
         return True
 
 

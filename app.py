@@ -48,7 +48,7 @@ CACHE_TTL = 10  # 秒
 
 # 常驻一个 Notifier 实例，不要在 background_alert_loop 每轮里 new 一个新的——
 # 那样它内部记的"这个问题已经通知过"的状态每 60 秒就被清空一次，等于永远发不完。
-_notifier = Notifier({}, is_watched=metrics_store.all_watched)
+_notifier = Notifier({}, watch_generations=metrics_store.watch_generations)
 
 ALERT_CHECK_INTERVAL = 60  # 秒，后台告警巡检间隔（与前端是否打开无关）
 AGENT_STALE_SECONDS = 180  # 秒，青源 agent 超过这么久没上报就不当它在线（默认上报间隔 60s，留够 3 倍余量）
@@ -784,11 +784,12 @@ def background_alert_loop():
             # 青源（自建 agent）上报的机器不一定跟宝塔面板重名，要单独判断：在线的按最新样本比阈值，
             # 离线的报离线（全部同时离线时合并成一条）。卸载掉的机器在设置页"移除"后就不再盯。
             now = time.time()
-            agent_alerts, keep_keys = plan_agent_alerts(
+            agent_alerts, keep_keys, drop_keys = plan_agent_alerts(
                 _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
             )
             active_keys |= keep_keys
-            # 期间有人点了"移除"也没关系：Notifier 在每次发送那一刻现查名单（见 Notifier.is_watched）
+            _notifier.forget_keys(drop_keys)
+            # 期间有人点了"移除"也没关系：Notifier 在每次发送那一刻现查名单（见 Notifier.watch_generations）
             for alert in agent_alerts:
                 active_keys.add(alert["key"])
                 _notifier.notify(alert)
