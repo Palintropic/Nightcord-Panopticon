@@ -6,6 +6,7 @@
 import json
 import os
 import sqlite3
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "metrics.db")
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS agent_last_seen (
   seen_at INTEGER NOT NULL
 );
 
--- 在设置页"移除"掉的机器。移除之后如果它又上报了（seen_at > retired_at），自动回到名单里。
+-- 在设置页"移除"掉的机器。它之后只要再上报一次，记录就会在同一个事务里被删掉，自动回到名单里。
 CREATE TABLE IF NOT EXISTS agent_retired (
   panel TEXT PRIMARY KEY,
   retired_at INTEGER NOT NULL
@@ -59,12 +60,14 @@ def init_db():
     with _connect() as conn:
         conn.executescript(_SCHEMA)
         # 升级前就在上报的机器还没有 agent_last_seen 记录，用历史里最新一条样本补上，
-        # 否则它们要等下一次上报才会出现在"应该在线"的名单里
+        # 否则它们要等下一次上报才会出现在"应该在线"的名单里。历史里的 ts 是 agent 自报的，
+        # 时钟跑快的 agent 会留下未来时间，回填时封顶到现在，不然它停报后会一直显示在线
         conn.execute(
             """
             INSERT OR IGNORE INTO agent_last_seen (panel, seen_at)
-            SELECT panel, MAX(ts) FROM metrics GROUP BY panel
-            """
+            SELECT panel, MIN(MAX(ts), ?) FROM metrics GROUP BY panel
+            """,
+            (int(time.time()),),
         )
 
 
@@ -83,19 +86,24 @@ def insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps):
 
 
 def mark_seen(panel, seen_at):
+    """
+    记一次有效上报。直接覆盖成这次的服务器时间（不取 MAX，免得哪个错误的大值把它永远钉住），
+    并在同一个事务里取消"已移除"标记——上报本身就说明机器回来了，不靠比较时间戳推断先后。
+    """
     with _connect() as conn:
         conn.execute(
             """
             INSERT INTO agent_last_seen (panel, seen_at) VALUES (?, ?)
-            ON CONFLICT(panel) DO UPDATE SET seen_at=MAX(agent_last_seen.seen_at, excluded.seen_at)
+            ON CONFLICT(panel) DO UPDATE SET seen_at=excluded.seen_at
             """,
             (panel, int(seen_at)),
         )
+        conn.execute("DELETE FROM agent_retired WHERE panel = ?", (panel,))
 
 
 def list_known_panels():
     """
-    所有"应该在线"的机器：上报过至少一次、且没被移除（或移除后又重新上报过）。
+    所有"应该在线"的机器：上报过至少一次、且没被移除（移除后再上报会自动取消移除，见 mark_seen）。
     返回 [{"panel", "seen_at"}, ...]，按名字排序。离线判定由调用方拿 seen_at 跟当前时间比。
     """
     with _connect() as conn:
@@ -103,7 +111,7 @@ def list_known_panels():
             """
             SELECT s.panel, s.seen_at FROM agent_last_seen s
             LEFT JOIN agent_retired r ON r.panel = s.panel
-            WHERE r.retired_at IS NULL OR s.seen_at > r.retired_at
+            WHERE r.panel IS NULL
             ORDER BY s.panel
             """
         ).fetchall()

@@ -380,6 +380,10 @@ def _merge_qingyuan(results):
     for state in _agent_states(now):
         panel_name = state["panel"]
         sample = state["sample"] or {}
+        offline_error = None if state["online"] else (
+            f"青源 agent 超过 {AGENT_STALE_SECONDS // 60} 分钟没有上报，最后一次上报在 "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state['seen_at']))}"
+        )
         qingyuan = {
             "cpu": sample.get("cpu"),
             "mem": sample.get("mem"),
@@ -390,6 +394,7 @@ def _merge_qingyuan(results):
             "ip_external": state["ip_external"],
             "online": state["online"],
             "seen_at": state["seen_at"],
+            "error": offline_error,
         }
         existing = (
             by_name.get(panel_name)
@@ -403,10 +408,7 @@ def _merge_qingyuan(results):
                 "name": panel_name,
                 "url": None,
                 "online": state["online"],
-                "error": None if state["online"] else (
-                    f"青源 agent 超过 {AGENT_STALE_SECONDS // 60} 分钟没有上报，最后一次上报在 "
-                    f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(state['seen_at']))}"
-                ),
+                "error": offline_error,
                 "kind": "qingyuan-only",
                 "qingyuan": qingyuan,
             })
@@ -786,9 +788,16 @@ def background_alert_loop():
                 _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
             )
             active_keys |= keep_keys
+            # 算计划和发通知之间可能刚好有人点了"移除"：发之前按数据库重新核对一次名单，
+            # 再把成员已被移除的旧告警静默作废，不然它们会在下面的 resolve() 里被当成"已恢复"
+            watched = {row["panel"] for row in metrics_store.list_known_panels()}
+            still_watched = lambda panels: all(p in watched for p in panels)
             for alert in agent_alerts:
+                if not still_watched(alert["panels"]):
+                    continue
                 active_keys.add(alert["key"])
                 _notifier.notify(alert)
+            _notifier.forget_retired(still_watched)
 
             # 这轮没再出现的 key 就是问题解决了，从"已通知"名单里摘掉，以后再犯还能收到通知
             _notifier.resolve(active_keys)

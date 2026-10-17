@@ -57,9 +57,9 @@ class RecordingNotifier(Notifier):
         pass
 
 
-def alert(key, server="tokyo", alert_type="机器离线告警"):
-    return {"key": key, "server": server, "alert_type": alert_type, "content": "x",
-            "ip_external": None, "ip_internal": None}
+def alert(key, server="tokyo", alert_type="机器离线告警", panels=None):
+    return {"key": key, "server": server, "panels": panels if panels is not None else [server],
+            "alert_type": alert_type, "content": "x", "ip_external": None, "ip_internal": None}
 
 
 class RecoveryTests(unittest.TestCase):
@@ -92,6 +92,35 @@ class RecoveryTests(unittest.TestCase):
         n.notify(alert("tokyo-agent-offline"))  # 冷却期内复发，不发
         n.resolve(set())
         self.assertEqual(n.sent, [("机器离线告警", "red"), ("机器离线告警已恢复", "green")])
+
+    def test_forget_drops_merged_alert_when_a_member_is_retired(self):
+        n = RecordingNotifier()
+        n.notify(alert(ALL_OFFLINE_KEY, server="全部青源机器", alert_type="全部机器同时失联",
+                       panels=["tokyo", "shanghai"]))
+        n.forget("tokyo")
+        n.forget("shanghai")
+        n.resolve(set())
+        self.assertEqual(n.sent, [("全部机器同时失联", "red")])
+
+    def test_forget_retired_uses_persisted_watch_list(self):
+        # 模拟移除请求跑在别的进程：这个 Notifier 没被调用 forget()，只靠巡检时查到的名单
+        n = RecordingNotifier()
+        n.notify(alert("tokyo-agent-offline"))
+        n.notify(alert("shanghai-agent-cpu", server="shanghai", alert_type="CPU高占用告警"))
+        watched = {"shanghai"}
+        n.forget_retired(lambda panels: all(p in watched for p in panels))
+        n.resolve({"shanghai-agent-cpu"})
+        self.assertEqual(len(n.sent), 2)
+
+    def test_bt_alerts_without_panels_are_untouched_by_forget_retired(self):
+        n = RecordingNotifier()
+        n.notify({"key": "上海-offline", "server": "上海", "alert_type": "面板离线告警", "content": "x"})
+        n.forget_retired(lambda panels: False)
+        self.assertTrue(n.is_active("上海-offline"))
+
+    def test_planned_alerts_name_their_panels(self):
+        alerts, _ = plan_agent_alerts([state("tokyo", 600), state("shanghai", 600)], {}, NOW, STALE, no_active)
+        self.assertEqual(alerts[0]["panels"], ["tokyo", "shanghai"])
 
 
 if __name__ == "__main__":

@@ -77,10 +77,23 @@ class Notifier:
         with self._lock:
             return [k for k, a in self._active.items() if a.get("server") == server]
 
-    def forget(self, server: str):
-        """机器被移除时调用：悄悄丢掉它名下所有未解决的告警，不发"已恢复"（它没恢复，只是不再盯了）。"""
+    def forget(self, panel: str):
+        """
+        机器被移除时调用：悄悄丢掉牵涉到它的所有未解决告警，不发"已恢复"（它没恢复，只是不再盯了）。
+        "全部机器同时失联"这种合并告警也算牵涉——成员变了，那条告警就不再成立。
+        """
+        self.forget_retired(lambda panels: panel not in panels)
+
+    def forget_retired(self, is_still_watched):
+        """
+        巡检每轮调用：按数据库里的持久化名单，悄悄丢掉成员已被移除的青源告警。
+        设置页的移除请求可能跑在另一个进程里（Gunicorn + worker.py），它的 forget() 碰不到
+        这里的内存状态；也可能刚好插在"算完告警计划"和"发出去"之间。两种情况都靠这里兜底，
+        保证移除永远不会被当成恢复。is_still_watched(panels) 返回 False 表示该告警作废。
+        """
         with self._lock:
-            for key in [k for k, a in self._active.items() if a.get("server") == server]:
+            for key in [k for k, a in self._active.items()
+                        if a.get("panels") is not None and not is_still_watched(a["panels"])]:
                 del self._active[key]
 
     def notify(self, alert: dict):
@@ -288,6 +301,7 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
         return {
             "key": f"{panel_name}-{suffix}",
             "server": panel_name,
+            "panels": [panel_name],  # 牵涉的青源机器，移除机器时据此静默作废（见 Notifier.forget_retired）
             "alert_type": alert_type,
             "content": content,
             "ip_external": ip_external,
@@ -341,6 +355,7 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
         alerts.append({
             "key": ALL_OFFLINE_KEY,
             "server": "全部青源机器",
+            "panels": [s["panel"] for s in states],
             "alert_type": "全部机器同时失联",
             "content": f"{names} 都超过 {stale_seconds // 60} 分钟没有上报。"
                        f"同时失联多半是 Panopticon 这边的网络或 WireGuard 出了问题，先查看板所在的机器。",
@@ -355,6 +370,7 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
             alerts.append({
                 "key": f"{s['panel']}-agent-offline",
                 "server": s["panel"],
+                "panels": [s["panel"]],
                 "alert_type": "机器离线告警",
                 "content": f"青源 agent 超过 {stale_seconds // 60} 分钟没有上报，最后一次上报在 {last}。",
                 "ip_external": s.get("ip_external"),
