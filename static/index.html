@@ -299,11 +299,11 @@ function renderStatusBar(){
   const summary = document.getElementById('statusSummary');
   const updated = document.getElementById('statusUpdated');
   if(!lastData){
-    if(refreshFailed) summary.textContent = '刷新失败';
+    if(refreshFailed) summary.textContent = summary.title = '刷新失败';
     return;
   }
   if(lastData.error){
-    alert.hidden = true; summary.textContent = lastData.error; updated.textContent = '';
+    alert.hidden = true; summary.textContent = summary.title = lastData.error; updated.textContent = '';
     return;
   }
   const ps = panels();
