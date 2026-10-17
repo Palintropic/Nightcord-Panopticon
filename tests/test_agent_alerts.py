@@ -92,15 +92,6 @@ class RecoveryTests(unittest.TestCase):
         n.resolve({"tokyo-agent-offline"})
         self.assertEqual(len(n.sent), 1)
 
-    def test_forget_drops_alerts_without_recovery(self):
-        n = RecordingNotifier()
-        n.notify(alert("tokyo-agent-offline"))
-        n.notify(alert("shanghai-agent-cpu", server="shanghai", alert_type="CPU高占用告警"))
-        n.forget("tokyo")
-        n.resolve({"shanghai-agent-cpu"})
-        self.assertEqual(len(n.sent), 2)
-        self.assertEqual(n.active_keys_for("shanghai"), ["shanghai-agent-cpu"])
-
     def test_cooldown_suppressed_alert_has_no_recovery(self):
         n = RecordingNotifier()
         n.cooldown = 600
@@ -109,15 +100,6 @@ class RecoveryTests(unittest.TestCase):
         n.notify(alert("tokyo-agent-offline"))  # 冷却期内复发，不发
         n.resolve(set())
         self.assertEqual(n.sent, [("机器离线告警", "red"), ("机器离线告警已恢复", "green")])
-
-    def test_forget_drops_merged_alert_when_a_member_is_retired(self):
-        n = RecordingNotifier()
-        n.notify(alert(merged_offline_key(["tokyo", "shanghai"]), server=ALL_OFFLINE_SERVER,
-                       alert_type="全部机器同时失联", panels=["tokyo", "shanghai"]))
-        n.forget("tokyo")
-        n.forget("shanghai")
-        n.resolve(set())
-        self.assertEqual(n.sent, [("全部机器同时失联", "red")])
 
     def test_retired_elsewhere_before_recovery_is_silent(self):
         n = RecordingNotifier(watched={"tokyo": 0, "shanghai": 0})
@@ -199,6 +181,16 @@ class RecoveryTests(unittest.TestCase):
         rounds = [[state(ALL_OFFLINE_SERVER, 10, cpu=95), state("b", 10)]] * 2 + [[state(ALL_OFFLINE_SERVER, 10), state("b", 10)]]
         self.run_rounds(n, rounds)
         self.assertEqual(n.sent, [("CPU高占用告警", "red"), ("CPU高占用告警已恢复", "green")])
+
+    def test_old_generation_cooldown_does_not_suppress_new_generation(self):
+        n = RecordingNotifier(watched={"a": 0})
+        n.cooldown = 600
+        self.run_rounds(n, [[state("a", 10, cpu=95)]])
+        n.retire("a")
+        self.run_rounds(n, [[]])                 # 移除后巡检一轮：旧告警静默摘掉，冷却记录还在
+        n.come_back("a")
+        self.run_rounds(n, [[state("a", 10, cpu=95, generation=1)]])
+        self.assertEqual(n.sent, [("CPU高占用告警", "red"), ("CPU高占用告警", "red")])
 
     def test_merged_keys_do_not_collide(self):
         self.assertNotEqual(merged_offline_key(["a", "b|c"]), merged_offline_key(["a|b", "c"]))

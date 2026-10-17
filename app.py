@@ -533,7 +533,8 @@ def api_agent_retire(name):
     """把机器移出监控名单（卸了 agent / 机器退役）。之后它要是又上报了，会自动回到名单里。"""
     if not metrics_store.retire_panel(name, time.time()):
         return jsonify({"error": "没有这台机器"}), 404
-    _notifier.forget(name)
+    # 不在这里清告警的内存状态：移除让监控代次 +1，旧告警在下一次发送 / 恢复检查时按代次静默作废。
+    # 在这里按机器名清，可能误删移除之后才发出的新一代告警（见 Notifier.notify 的代次说明）
     _cache["data"] = None  # 看板下次刷新就不再显示这张卡
     return jsonify({"ok": True})
 

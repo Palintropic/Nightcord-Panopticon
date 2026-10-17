@@ -34,7 +34,7 @@ class Notifier:
         # 告警发出时记下代次，恢复时代次对不上（中间移除过，哪怕又回来了）也静默丢弃。
         # 这样移除请求跑在别的进程、或者插在巡检中途，都不会被当成恢复。
         self._watch_generations = watch_generations
-        self._last_sent = {}  # key -> 上次通知时间戳，问题解决后又复发时用来防抖
+        self._last_sent = {}  # key -> (上次通知时间戳, 当时的监控代次)，问题解决后又复发时用来防抖；冷却不跨代
         # 当前"已经通知过、问题还没解决"的告警：key -> 发出时的 alert dict。
         # 同一个问题只发一次；问题解决时用存下来的 alert 拼"已恢复"通知。
         self._active = {}
@@ -49,15 +49,15 @@ class Notifier:
         self.config = config or {}
         self.cooldown = self.config.get("cooldown_seconds", 600)
 
-    def _should_send(self, key: str) -> bool:
+    def _should_send(self, key: str, generations) -> bool:
         # 调用方已持有 self._lock
         if key in self._active:
             return False  # 这个问题还没解决，之前已经通知过了，不用再发
         now = time.time()
-        last = self._last_sent.get(key, 0)
-        if now - last < self.cooldown:
-            return False  # 刚解决又复发（抖动）也别刷屏，等冷却过了才重新算一次新问题
-        self._last_sent[key] = now
+        last, last_generations = self._last_sent.get(key, (0, None))
+        if last_generations == generations and now - last < self.cooldown:
+            return False  # 同一代里刚解决又复发（抖动）也别刷屏；换了一代（移除后又回来）从头算
+        self._last_sent[key] = (now, generations)
         return True
 
     def is_active(self, key: str) -> bool:
@@ -92,15 +92,6 @@ class Notifier:
         with self._lock:
             return [(k, list(a.get("panels") or [])) for k, a in self._active.items() if a.get("merged")]
 
-    def forget(self, panel: str):
-        """
-        同进程里的移除请求调用：立刻悄悄丢掉牵涉到这台机器的未解决告警（含合并告警）。
-        只是让内存状态马上干净；正确性不靠它——跨进程的移除由发送前的代次检查兜底。
-        """
-        with self._lock:
-            for key in [k for k, a in self._active.items() if panel in (a.get("panels") or [])]:
-                del self._active[key]
-
     def forget_keys(self, keys):
         """静默作废指定告警（被新的合并告警取代、又没有成员恢复时用），不发"已恢复"。"""
         with self._lock:
@@ -134,10 +125,9 @@ class Notifier:
         with self._lock:
             existing = self._active.get(alert["key"])
             if existing is not None and existing.get("generations") != generations:
-                # 同一个 key 上还挂着上一代的告警：那是移除前的事，作废它，新一代从头算（含冷却）
+                # 同一个 key 上还挂着上一代的告警：那是移除前的事，作废它，新一代从头算
                 del self._active[alert["key"]]
-                self._last_sent.pop(alert["key"], None)
-            if not self._should_send(alert["key"]):
+            if not self._should_send(alert["key"], generations):
                 return
             self._active[alert["key"]] = dict(alert, notified_at=time.time(), generations=generations)
         self._send_feishu(alert)
