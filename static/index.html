@@ -527,14 +527,20 @@ function detailPivots(p){
   return [{label:'概览', render:overviewItem}, {label:'磁盘', render:diskItem}, {label:'历史', render:historyItem}];
 }
 
+// Only the latest chart request may draw: switching range or refreshing cancels the previous one,
+// and every request gives up after 10 s (by eye) so a stuck one cannot pile up.
+let chartRequest = null;
 async function loadChart(panelName){
   const el = document.getElementById('chart');
   if(!el) return;
   const hours = metricsRangeState[panelName] ?? 6;
+  if(chartRequest) chartRequest.abort();
+  const request = chartRequest = new AbortController();
+  const signal = AbortSignal.any ? AbortSignal.any([request.signal, AbortSignal.timeout(10000)]) : request.signal;
   try{
-    const res = await fetch(`/api/metrics/history?panel=${encodeURIComponent(panelName)}&hours=${hours}`);
+    const res = await fetch(`/api/metrics/history?panel=${encodeURIComponent(panelName)}&hours=${hours}`, {signal});
     const samples = res.ok ? ((await res.json()).samples || []) : [];
-    if(document.getElementById('chart') !== el) return;
+    if(request !== chartRequest || document.getElementById('chart') !== el) return;
     if(samples.length < 2){ el.innerHTML = '<div class="empty-hint">这段时间没有足够的数据</div>'; return; }
     const w = 800, h = 200;
     const tsList = samples.map(s => s.ts);
@@ -555,6 +561,7 @@ async function loadChart(panelName){
       <div class="legend">${series.map(s => `<span><i style="background:${s.color}"></i>${s.label} ${escapeHtml(fmtPct(last[s.k]))}</span>`).join('')}
       <span class="caption">网格线 0 / 50 / 100%</span></div>`;
   }catch(e){
+    if(request !== chartRequest || document.getElementById('chart') !== el) return;  // superseded
     el.innerHTML = '<div class="empty-hint">加载失败</div>';
   }
 }
@@ -608,16 +615,23 @@ window.addEventListener('hashchange', () => {
 })();
 
 // ---------- data ----------
+// Each refresh is a batch; a batch only lands in the shared cache if no newer batch has started,
+// so a slow old batch can never overwrite newer curves. Requests give up after 10 s (by eye).
+let tileBatch = 0;
 async function loadTileHistory(){
+  const batch = ++tileBatch;
   const machines = panels().filter(p => p.kind !== 'nightcord-status' && p.name);
+  const results = {};
   await Promise.all(machines.map(async p => {
     try{
-      // Give up on a stuck request instead of piling one up every refresh (10 s by eye).
       const res = await fetch(`/api/metrics/history?panel=${encodeURIComponent(p.name)}&hours=1`,
                               {signal: AbortSignal.timeout(10000)});
-      tileHistory[p.name] = res.ok ? ((await res.json()).samples || []) : [];
-    }catch(e){ tileHistory[p.name] = []; }
+      results[p.name] = res.ok ? ((await res.json()).samples || []) : [];
+    }catch(e){ results[p.name] = []; }
   }));
+  if(batch !== tileBatch) return false;
+  tileHistory = results;
+  return true;
 }
 
 async function refresh(animate){
@@ -639,10 +653,9 @@ async function refresh(animate){
   }
   // Tile charts arrive afterwards: a slow history request must not hold up the dashboard.
   if(!lastData.error){
-    const snapshot = lastData;
-    await loadTileHistory();
+    const landed = await loadTileHistory();
     const now = route();
-    if(lastData === snapshot && now.view === 'list' && now.pivot === 0) render(false);
+    if(landed && now.view === 'list' && now.pivot === 0) render(false);
   }
 }
 document.getElementById('refresh').addEventListener('click', () => refresh(false));
