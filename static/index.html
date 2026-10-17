@@ -87,7 +87,7 @@
   <main class="content" id="content"></main>
   <footer class="status-bar">
     <a class="status-item status-alert" id="statusAlert" href="#p=1" hidden></a>
-    <span class="status-item" id="statusSummary">加载中…</span>
+    <span class="status-item status-summary"><span id="statusSummary">加载中…</span></span>
     <span class="status-spacer"></span>
     <span class="status-item status-optional" id="statusUpdated"></span>
     <button class="status-item" id="refresh">刷新</button>
@@ -315,6 +315,7 @@ function renderStatusBar(){
   // Notes sit next to the count, which stays visible at phone width.
   const notes = [...staleNotes(), remoteNote()].filter(Boolean);
   summary.textContent = [`${online} / ${machines.length} 在线`, ...notes].join(' · ');
+  summary.title = summary.textContent;
   updated.textContent = '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
 }
 
