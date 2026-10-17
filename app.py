@@ -46,7 +46,9 @@ PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_op
 # 远程数据源（宝塔面板、Nightcord-Status）的采集结果缓存。远程采集可能很慢（宝塔接口串行，
 # 一台没响应就要几十秒），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
 # （同一时间只跑一个）。ts 记的是采集完成的时间。青源数据每次请求都从数据库现读，始终最新。
-_remote = {"data": None, "ts": 0, "refreshing": False}
+# gen：配置代次。改配置时 +1，采集开始时记下代次，结果入缓存前代次对不上就丢弃——
+# 不然一次按旧配置跑的采集会把刚删掉的面板写回缓存。
+_remote = {"data": None, "ts": 0, "refreshing": False, "gen": 0}
 _remote_lock = threading.Lock()
 CACHE_TTL = 10  # 秒
 
@@ -306,8 +308,9 @@ def webauthn_login_verify():
 
 def fetch_all():
     """采集远程数据源（顺便更新缓存）并叠加青源数据。后台巡检用；看板请求走 api_status 的非阻塞路径。"""
+    gen = _remote_gen()
     remote = fetch_remote()
-    _store_remote(remote)
+    _store_remote(remote, gen)
     return _with_qingyuan(remote)
 
 
@@ -317,8 +320,15 @@ def _with_qingyuan(remote):
     return results
 
 
-def _store_remote(data):
+def _remote_gen():
     with _remote_lock:
+        return _remote["gen"]
+
+
+def _store_remote(data, gen):
+    with _remote_lock:
+        if gen != _remote["gen"]:
+            return  # 采集期间配置改过了，这份结果按的是旧配置
         _remote["data"] = data
         _remote["ts"] = time.time()
 
@@ -326,6 +336,7 @@ def _store_remote(data):
 def _invalidate_remote():
     with _remote_lock:
         _remote["data"] = None
+        _remote["gen"] += 1
 
 
 def _refresh_remote_async():
@@ -335,9 +346,11 @@ def _refresh_remote_async():
             return
         _remote["refreshing"] = True
 
+    gen = _remote_gen()
+
     def run():
         try:
-            _store_remote(fetch_remote())
+            _store_remote(fetch_remote(), gen)
         except Exception as e:
             print(f"[remote refresh] 出错: {e}")
         finally:
@@ -485,9 +498,10 @@ def api_status():
     先只返回青源机器，remote_pending=True，远程部分下一次刷新就有了。
     """
     try:
-        load_config()
+        cfg = load_config()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
+    has_remote = bool(cfg.get("panels")) or bool((cfg.get("nightcord_status") or {}).get("enabled"))
     now = time.time()
     with _remote_lock:
         remote, remote_ts = _remote["data"], _remote["ts"]
@@ -496,8 +510,9 @@ def api_status():
     return jsonify({
         "panels": _with_qingyuan(remote or []),
         "ts": now,
-        "remote_ts": remote_ts if remote is not None else None,
-        "remote_pending": remote is None,
+        # 远程数据源（宝塔 / Nightcord-Status）那部分的采集完成时间；前端据此提示数据是否陈旧
+        "remote_ts": remote_ts if remote is not None and has_remote else None,
+        "remote_pending": remote is None and has_remote,
         "thresholds": _thresholds(),
     })
 
