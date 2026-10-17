@@ -46,9 +46,11 @@ PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_op
 # 远程数据源（宝塔面板、Nightcord-Status）的采集结果缓存。远程采集可能很慢（宝塔接口串行，
 # 一台没响应就要几十秒），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
 # （同一时间只跑一个）。ts 记的是采集完成的时间。青源数据每次请求都从数据库现读，始终最新。
-# gen：配置代次。改配置时 +1，采集开始时记下代次，结果入缓存前代次对不上就丢弃——
-# 不然一次按旧配置跑的采集会把刚删掉的面板写回缓存。
-_remote = {"data": None, "ts": 0, "refreshing": False, "gen": 0}
+# fp：采集开始时那两段配置的指纹。读缓存时跟当前配置比，对不上就当作没有缓存——指纹来自
+#     配置文件本身，所以别的进程（Gunicorn 多 worker）改了配置也能认出来。
+# seq：每次采集开始领一个递增序号，只有比已入缓存的更新的采集才能写入，先开始后结束的旧采集
+#      （比如巡检和看板触发的刷新同时在跑）不会覆盖新结果。
+_remote = {"data": None, "ts": 0, "fp": None, "refreshing": False, "seq": 0, "stored_seq": 0}
 _remote_lock = threading.Lock()
 CACHE_TTL = 10  # 秒
 
@@ -308,9 +310,9 @@ def webauthn_login_verify():
 
 def fetch_all():
     """采集远程数据源（顺便更新缓存）并叠加青源数据。后台巡检用；看板请求走 api_status 的非阻塞路径。"""
-    gen = _remote_gen()
+    ticket = _begin_remote_fetch()
     remote = fetch_remote()
-    _store_remote(remote, gen)
+    _store_remote(remote, ticket)
     return _with_qingyuan(remote)
 
 
@@ -320,23 +322,39 @@ def _with_qingyuan(remote):
     return results
 
 
-def _remote_gen():
-    with _remote_lock:
-        return _remote["gen"]
+def _remote_fingerprint(cfg=None):
+    """决定远程采集结果的那两段配置（宝塔面板列表、Nightcord-Status）的指纹。"""
+    if cfg is None:
+        try:
+            cfg = load_config()
+        except RuntimeError:
+            cfg = {}
+    return json.dumps([cfg.get("panels") or [], cfg.get("nightcord_status") or {}], sort_keys=True, ensure_ascii=False)
 
 
-def _store_remote(data, gen):
+def _begin_remote_fetch():
+    """采集开始时调用：记下当时的配置指纹，领一个序号。指纹在采集之前取，配置若在采集中途改了，
+    这份结果的指纹就是旧的，读的时候会被当作过期。"""
+    fp = _remote_fingerprint()
     with _remote_lock:
-        if gen != _remote["gen"]:
-            return  # 采集期间配置改过了，这份结果按的是旧配置
+        _remote["seq"] += 1
+        return {"seq": _remote["seq"], "fp": fp}
+
+
+def _store_remote(data, ticket):
+    with _remote_lock:
+        if ticket["seq"] < _remote["stored_seq"]:
+            return  # 有更晚开始的采集已经写进来了，这份更旧
+        _remote["stored_seq"] = ticket["seq"]
         _remote["data"] = data
         _remote["ts"] = time.time()
+        _remote["fp"] = ticket["fp"]
 
 
 def _invalidate_remote():
+    """同进程里刚保存过配置：马上丢掉缓存。跨进程靠读缓存时的指纹比对。"""
     with _remote_lock:
         _remote["data"] = None
-        _remote["gen"] += 1
 
 
 def _refresh_remote_async():
@@ -346,11 +364,10 @@ def _refresh_remote_async():
             return
         _remote["refreshing"] = True
 
-    gen = _remote_gen()
-
     def run():
         try:
-            _store_remote(fetch_remote(), gen)
+            ticket = _begin_remote_fetch()
+            _store_remote(fetch_remote(), ticket)
         except Exception as e:
             print(f"[remote refresh] 出错: {e}")
         finally:
@@ -504,7 +521,9 @@ def api_status():
     has_remote = bool(cfg.get("panels")) or bool((cfg.get("nightcord_status") or {}).get("enabled"))
     now = time.time()
     with _remote_lock:
-        remote, remote_ts = _remote["data"], _remote["ts"]
+        remote, remote_ts, remote_fp = _remote["data"], _remote["ts"], _remote["fp"]
+    if remote is not None and remote_fp != _remote_fingerprint(cfg):
+        remote = None  # 缓存是按改之前的配置采的（可能是别的进程改的配置）
     if remote is None or now - remote_ts >= CACHE_TTL:
         _refresh_remote_async()
     return jsonify({
@@ -726,7 +745,7 @@ def _deploy_and_report(ip, port, ssh_user, password, remember, panel_name_overri
         # 这个猜测在通过 SSH 隧道／127.0.0.1 访问设置页、但部署目标是别的机器时是错的：
         # agent 会拿到一个只在"本机自己"才有意义的地址，上报永远静默失败，dashboard 上永远不会出现这张卡片。
         report_url = f"{request.scheme}://{request.host}{METRICS_REPORT_PATH}"
-    shared_secret = cfg["metrics_agent"]["shared_secret"]
+    shared_secret = ma_cfg["shared_secret"]
 
     q = queue.Queue()
     result = {}
