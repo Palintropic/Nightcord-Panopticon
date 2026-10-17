@@ -90,10 +90,13 @@ class Notifier:
             self._send_feishu(recovery, template="green", mention_all=False)
             self._send_email(recovery)
 
-    def active_keys_for(self, server: str):
-        """某台机器名下未解决的普通告警 key（不含合并告警，哪怕有机器恰好跟合并告警的显示名同名）。"""
+    def active_keys_for(self, panel: str):
+        """
+        某台青源机器名下未解决的告警 key。按告警牵涉的青源机器（panels）认，不看显示名：
+        同名的宝塔面板告警（绑定部署时名字本来就一样）不算，合并告警也不算。
+        """
         with self._lock:
-            return [k for k, a in self._active.items() if a.get("server") == server and not a.get("merged")]
+            return [k for k, a in self._active.items() if panel in (a.get("panels") or []) and not a.get("merged")]
 
 
 

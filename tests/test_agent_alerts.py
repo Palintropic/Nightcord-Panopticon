@@ -162,6 +162,18 @@ class RecoveryTests(unittest.TestCase):
         n.resolve({ALL_OFFLINE_KEY})            # 宝塔面板恢复了
         self.assertEqual(n.sent[-1], ("面板离线告警已恢复", "green"))
 
+    def test_same_named_bt_panel_recovers_while_agent_is_offline(self):
+        n = RecordingNotifier(watched={"a": 0, "b": 0})
+        bt_down = {"name": "a", "online": False, "url": "http://x", "error": "down"}
+        bt_up = {"name": "a", "online": True}
+        for bt in (bt_down, bt_up):
+            bt_alerts = evaluate_alerts(bt, {})
+            alerts, keep = plan_agent_alerts([state("a", 600), state("b", 10)], {}, NOW, STALE, n.active_keys_for)
+            for a in bt_alerts + alerts:
+                n.notify(a)
+            n.resolve({a["key"] for a in bt_alerts + alerts} | keep)
+        self.assertEqual(n.sent, [("面板离线告警", "red"), ("机器离线告警", "red"), ("面板离线告警已恢复", "green")])
+
     def test_merged_alert_gaining_a_member_is_not_recovered(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0, "c": 0})
         self.run_rounds(n, [[state("a", 600), state("b", 600)],
