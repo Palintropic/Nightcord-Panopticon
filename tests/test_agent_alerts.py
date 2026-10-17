@@ -1,6 +1,6 @@
 import unittest
 
-from notifier import ALL_OFFLINE_SERVER, Notifier, merged_offline_key, plan_agent_alerts
+from notifier import ALL_OFFLINE_KEY, ALL_OFFLINE_SERVER, Notifier, plan_agent_alerts
 
 NOW = 10_000
 STALE = 180
@@ -18,8 +18,7 @@ def no_active(_server):
 
 class PlanAgentAlertsTests(unittest.TestCase):
     def plan(self, states, active_keys_for=no_active):
-        alerts, keep, _drop = plan_agent_alerts(states, {"cpu": 90}, NOW, STALE, active_keys_for)
-        return alerts, keep
+        return plan_agent_alerts(states, {"cpu": 90}, NOW, STALE, active_keys_for)
 
     def test_three_missed_reports_is_offline(self):
         alerts, _ = self.plan([state("tokyo", 181), state("shanghai", 30)])
@@ -31,7 +30,7 @@ class PlanAgentAlertsTests(unittest.TestCase):
 
     def test_all_offline_collapses_into_one_alert(self):
         alerts, _ = self.plan([state("tokyo", 600), state("shanghai", 600), state("FreePBX", 600)])
-        self.assertEqual([a["key"] for a in alerts], [merged_offline_key(["FreePBX", "shanghai", "tokyo"])])
+        self.assertEqual([a["key"] for a in alerts], [ALL_OFFLINE_KEY])
 
     def test_single_machine_offline_is_not_treated_as_all_offline(self):
         alerts, _ = self.plan([state("tokyo", 600)])
@@ -129,15 +128,14 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(n.sent, [("CPU高占用告警", "red")])
 
     def run_rounds(self, n, rounds):
-        """rounds: 每轮的 states；照 app 巡检的顺序调用 plan / forget_keys / notify / resolve。"""
+        """rounds: 每轮的 states；照 app 巡检的顺序调用 plan / notify / resolve。"""
         for states in rounds:
-            alerts, keep, drop = plan_agent_alerts(states, {"cpu": 90}, NOW, STALE, n.active_keys_for, n.active_merged)
-            n.forget_keys(drop)
+            alerts, keep = plan_agent_alerts(states, {"cpu": 90}, NOW, STALE, n.active_keys_for)
             for a in alerts:
                 n.notify(a)
             n.resolve({a["key"] for a in alerts} | keep)
 
-    def test_merged_alert_with_fewer_members_is_a_new_alert(self):
+    def test_merged_alert_with_fewer_members_is_replaced(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0, "c": 0})
         n.cooldown = 600
         abc = [state("a", 600), state("b", 600), state("c", 600)]
@@ -145,13 +143,35 @@ class RecoveryTests(unittest.TestCase):
         n.retire("a")
         self.run_rounds(n, [abc[1:]])
         self.assertEqual(n.sent, [("全部机器同时失联", "red"), ("全部机器同时失联", "red")])
-        self.assertEqual([k for k, _ in n.active_merged()], [merged_offline_key(["b", "c"])])
+        self.assertEqual(n._active[ALL_OFFLINE_KEY]["panels"], ["b", "c"])
 
-    def test_merged_alert_gaining_a_member_is_superseded_not_recovered(self):
+    def test_merged_alert_gaining_a_member_is_not_recovered(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0, "c": 0})
         self.run_rounds(n, [[state("a", 600), state("b", 600)],
                             [state("a", 600), state("b", 600), state("c", 600)]])
-        self.assertEqual(n.sent, [("全部机器同时失联", "red"), ("全部机器同时失联", "red")])
+        self.assertNotIn(("全部机器同时失联已恢复", "green"), n.sent)
+        self.assertEqual(n._active[ALL_OFFLINE_KEY]["panels"], ["a", "b", "c"])
+
+    def test_cancelled_replacement_keeps_old_merged_alert(self):
+        # ena 第六轮：AB 已报；计划 ABC 后、发送前 C 被移除 → 取消 ABC，AB 仍要能恢复
+        n = RecordingNotifier(watched={"a": 0, "b": 0, "c": 0})
+        self.run_rounds(n, [[state("a", 600), state("b", 600)]])
+        alerts, keep = plan_agent_alerts([state("a", 600), state("b", 600), state("c", 600)], {}, NOW, STALE, n.active_keys_for)
+        n.retire("c")
+        for a in alerts:
+            n.notify(a)
+        n.resolve({a["key"] for a in alerts} | keep)
+        self.run_rounds(n, [[state("a", 10), state("b", 600)]])
+        self.assertEqual(n.sent[-1], ("全部机器同时失联已恢复", "green"))
+
+    def test_merged_alert_survives_add_then_retire_within_cooldown(self):
+        n = RecordingNotifier(watched={"a": 0, "b": 0, "c": 0})
+        n.cooldown = 600
+        ab = [state("a", 600), state("b", 600)]
+        self.run_rounds(n, [ab, ab + [state("c", 600)]])
+        n.retire("c")
+        self.run_rounds(n, [ab, [state("a", 10), state("b", 600)]])
+        self.assertEqual(n.sent[-1], ("全部机器同时失联已恢复", "green"))
 
     def test_merged_alert_recovers_when_a_member_returns(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0})
@@ -169,7 +189,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_plan_from_before_retire_is_dropped(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0})
-        alerts, _, _ = plan_agent_alerts([state("a", 600), state("b", 10)], {}, NOW, STALE, n.active_keys_for, n.active_merged)
+        alerts, _ = plan_agent_alerts([state("a", 600), state("b", 10)], {}, NOW, STALE, n.active_keys_for)
         n.retire("a"); n.come_back("a")          # 计划算完后 a 被移除又回来
         for a in alerts:
             n.notify(a)
@@ -192,11 +212,8 @@ class RecoveryTests(unittest.TestCase):
         self.run_rounds(n, [[state("a", 10, cpu=95, generation=1)]])
         self.assertEqual(n.sent, [("CPU高占用告警", "red"), ("CPU高占用告警", "red")])
 
-    def test_merged_keys_do_not_collide(self):
-        self.assertNotEqual(merged_offline_key(["a", "b|c"]), merged_offline_key(["a|b", "c"]))
-
     def test_planned_alerts_name_their_panels(self):
-        alerts, _, _ = plan_agent_alerts([state("tokyo", 600), state("shanghai", 600)], {}, NOW, STALE, no_active)
+        alerts, _ = plan_agent_alerts([state("tokyo", 600), state("shanghai", 600)], {}, NOW, STALE, no_active)
         self.assertEqual(alerts[0]["panels"], ["tokyo", "shanghai"])
 
 

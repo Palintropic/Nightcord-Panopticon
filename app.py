@@ -786,12 +786,10 @@ def background_alert_loop():
             # 青源（自建 agent）上报的机器不一定跟宝塔面板重名，要单独判断：在线的按最新样本比阈值，
             # 离线的报离线（全部同时离线时合并成一条）。卸载掉的机器在设置页"移除"后就不再盯。
             now = time.time()
-            agent_alerts, keep_keys, drop_keys = plan_agent_alerts(
-                _agent_states(now), thresholds, now, AGENT_STALE_SECONDS,
-                _notifier.active_keys_for, _notifier.active_merged,
+            agent_alerts, keep_keys = plan_agent_alerts(
+                _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
             )
             active_keys |= keep_keys
-            _notifier.forget_keys(drop_keys)
             # 期间有人点了"移除"也没关系：Notifier 在每次发送那一刻现查名单（见 Notifier.watch_generations）
             for alert in agent_alerts:
                 active_keys.add(alert["key"])

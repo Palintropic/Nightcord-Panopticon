@@ -2,7 +2,6 @@
 告警通知模块：支持飞书自定义机器人 Webhook 与 SMTP 邮件。
 两个通道都是"尽力而为"——某一个失败不影响另一个，也不影响主流程。
 """
-import json
 import smtplib
 import threading
 import time
@@ -87,16 +86,7 @@ class Notifier:
         with self._lock:
             return [k for k, a in self._active.items() if a.get("server") == server and not a.get("merged")]
 
-    def active_merged(self):
-        """未解决的合并告警：[(key, 成员列表)]。按告警上的 merged 标记识别，不看显示名。"""
-        with self._lock:
-            return [(k, list(a.get("panels") or [])) for k, a in self._active.items() if a.get("merged")]
 
-    def forget_keys(self, keys):
-        """静默作废指定告警（被新的合并告警取代、又没有成员恢复时用），不发"已恢复"。"""
-        with self._lock:
-            for key in keys:
-                self._active.pop(key, None)
 
     def _current_generations(self, alert: dict):
         panels = alert.get("panels")
@@ -350,50 +340,35 @@ ALL_OFFLINE_KEY = "qingyuan-all-offline"
 ALL_OFFLINE_SERVER = "全部青源机器"
 
 
-def merged_offline_key(panels):
-    # 成员用排序后的 JSON 编码：机器名里带什么字符都不会让两组不同的成员撞成同一个 key
-    return f"{ALL_OFFLINE_KEY}:{json.dumps(sorted(panels), ensure_ascii=False)}"
-
-
-def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, active_keys_for,
-                      active_merged=lambda: []):
+def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, active_keys_for):
     """
-    一轮巡检里所有青源机器的告警计划，返回 (alerts, keep_keys, drop_keys)。
+    一轮巡检里所有青源机器的告警计划，返回 (alerts, keep_keys)。
     - alerts：这轮要交给 Notifier.notify() 的告警。
     - keep_keys：这轮没产出、但不能当成"已恢复"的 key。机器离线时拿不到新样本，
       它之前的 CPU/磁盘告警既不能算恢复也不能重发，原样保留到它重新上报为止。
-    - drop_keys：要静默作废的旧合并告警。合并告警只有在它自己的成员里有机器重新在线时才算恢复；
-      成员集合变了（有机器加入或被移除）而成员一台都没回来，旧的那条只是被取代，不是恢复。
     states 每项形如 {"panel", "seen_at", "generation", "sample", "ip_external", "ip_internal", "disk_detail"}。
-    active_keys_for(server) 返回该机器名下当前未解决的普通告警 key（Notifier.active_keys_for），
-    active_merged() 返回未解决的合并告警 [(key, 成员)]（Notifier.active_merged）。
+    active_keys_for(server) 返回该机器名下当前未解决的普通告警 key（Notifier.active_keys_for）。
     每条告警都带上读取状态时的监控代次 generations，发送时代次变了就作废（见 Notifier.notify）。
 
     所有机器同时离线（至少两台）时只发一条合并告警：大概率是 Panopticon 自己这边断网 /
-    WireGuard 掉了，而不是每台机器都挂了，分开报只会一下子刷屏。
+    WireGuard 掉了，而不是每台机器都挂了，分开报只会一下子刷屏。合并告警说的是"一台都联系不上"
+    这一件事，key 固定：失联期间成员增减仍是同一件事；只要有任意一台联系上，这件事就结束了
+    （发"已恢复"，之后由各台机器自己的告警接着报）。成员被移除时按代次静默作废，不算恢复。
     """
-    alerts, keep_keys, drop_keys = [], set(), set()
+    alerts, keep_keys = [], set()
     offline = [s for s in states if now - s["seen_at"] > stale_seconds]
     offline_panels = {s["panel"] for s in offline}
-    online_panels = {s["panel"] for s in states} - offline_panels
 
     for s in offline:
         keep_keys |= set(active_keys_for(s["panel"]))
 
     all_offline = len(states) >= 2 and len(offline) == len(states)
-    new_merged_key = merged_offline_key(s["panel"] for s in states) if all_offline else None
-    for key, members in active_merged():
-        if key == new_merged_key:
-            continue
-        if not set(members) & online_panels:
-            drop_keys.add(key)
     generation_of = {s["panel"]: s.get("generation", 0) for s in states}
 
     if all_offline:
         names = "、".join(s["panel"] for s in states)
         alerts.append({
-            # 成员写进 key：成员变了就是一条新的合并告警，不会被旧告警的去重和冷却吞掉
-            "key": new_merged_key,
+            "key": ALL_OFFLINE_KEY,
             "server": ALL_OFFLINE_SERVER,
             "merged": True,
             "panels": [s["panel"] for s in states],
@@ -404,7 +379,7 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
             "ip_external": None,
             "ip_internal": None,
         })
-        return alerts, keep_keys, drop_keys
+        return alerts, keep_keys
 
     for s in states:
         if s["panel"] in offline_panels:
@@ -425,4 +400,4 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
             ))
     for a in alerts:
         a["generations"] = {p: generation_of[p] for p in a["panels"]}
-    return alerts, keep_keys, drop_keys
+    return alerts, keep_keys
