@@ -536,10 +536,9 @@ async function loadChart(panelName){
   const hours = metricsRangeState[panelName] ?? 6;
   if(chartRequest) chartRequest.abort();
   const request = chartRequest = new AbortController();
-  const timer = setTimeout(() => request.abort(), 10000);
   try{
-    const res = await fetch(`/api/metrics/history?panel=${encodeURIComponent(panelName)}&hours=${hours}`, {signal:request.signal});
-    const samples = res.ok ? ((await res.json()).samples || []) : [];
+    const r = await fetchJsonWithTimeout(`/api/metrics/history?panel=${encodeURIComponent(panelName)}&hours=${hours}`, 10000, request);
+    const samples = r.ok ? (r.data.samples || []) : [];
     if(request !== chartRequest || document.getElementById('chart') !== el) return;
     if(samples.length < 2){ el.innerHTML = '<div class="empty-hint">这段时间没有足够的数据</div>'; return; }
     const w = 800, h = 200;
@@ -563,8 +562,6 @@ async function loadChart(panelName){
   }catch(e){
     if(request !== chartRequest || document.getElementById('chart') !== el) return;  // superseded
     el.innerHTML = '<div class="empty-hint">加载失败</div>';
-  }finally{
-    clearTimeout(timer);
   }
 }
 
@@ -620,10 +617,18 @@ window.addEventListener('hashchange', () => {
 // Each refresh is a batch; a batch only lands in the shared cache if no newer batch has started,
 // so a slow old batch can never overwrite newer curves. Requests give up after 10 s (by eye).
 let tileBatch = 0;
-function fetchWithTimeout(url, ms){
-  const controller = new AbortController();
+// The timeout covers reading the body too: a response whose headers arrive but whose body never
+// finishes is aborted as well. Resolves to {ok, status, data}.
+async function fetchJsonWithTimeout(url, ms, controller){
+  controller = controller || new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
-  return fetch(url, {signal:controller.signal}).finally(() => clearTimeout(timer));
+  try{
+    const res = await fetch(url, {signal:controller.signal});
+    const data = await res.json();
+    return {ok:res.ok, status:res.status, data};
+  }finally{
+    clearTimeout(timer);
+  }
 }
 async function loadTileHistory(){
   const batch = ++tileBatch;
@@ -631,8 +636,8 @@ async function loadTileHistory(){
   const results = {};
   await Promise.all(machines.map(async p => {
     try{
-      const res = await fetchWithTimeout(`/api/metrics/history?panel=${encodeURIComponent(p.name)}&hours=1`, 10000);
-      results[p.name] = res.ok ? ((await res.json()).samples || []) : [];
+      const r = await fetchJsonWithTimeout(`/api/metrics/history?panel=${encodeURIComponent(p.name)}&hours=1`, 10000);
+      results[p.name] = r.ok ? (r.data.samples || []) : [];
     }catch(e){ results[p.name] = []; }
   }));
   if(batch !== tileBatch) return false;
@@ -647,8 +652,7 @@ async function refresh(animate){
   const seq = ++statusSeq;
   let data;
   try{
-    const res = await fetchWithTimeout('/api/status', 10000);
-    data = await res.json();
+    data = (await fetchJsonWithTimeout('/api/status', 10000)).data;
   }catch(e){
     if(seq === statusSeq) document.getElementById('statusSummary').textContent = '刷新失败';
     return;

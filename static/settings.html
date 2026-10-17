@@ -91,7 +91,7 @@
           <label class="field">收件人（多个用逗号分隔）<input type="text" id="emailTo" placeholder="a@b.com, c@d.com"></label>
         </div>
       </div>
-      <div class="save-row"><button class="btn btn-accent" onclick="save()">保存</button><span class="save-msg"></span></div>
+      <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
     </section>
 
     <!-- 青源机器 -->
@@ -149,7 +149,7 @@
           <label class="field">连续失败几次后锁定<input type="number" id="authMaxAttempts" value="5"></label>
           <label class="field">锁定时长（秒）<input type="number" id="authLockout" value="900"></label>
         </div>
-        <div class="save-row"><button class="btn btn-accent" onclick="save()">保存</button><span class="save-msg"></span></div>
+        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
       </div>
       <div class="group">
         <div class="group-header">Passkey</div>
@@ -169,7 +169,7 @@
           只用青源 agent 的话这里留空就行。</div>
         <div id="panels"></div>
         <button class="btn" onclick="addPanelRow()" style="margin-top:var(--gutter)">添加面板</button>
-        <div class="save-row"><button class="btn btn-accent" onclick="save()">保存</button><span class="save-msg"></span></div>
+        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
       </div>
     </section>
   </main>
@@ -334,19 +334,20 @@ async function addPasskey(){
 }
 
 // ---------- config load / save ----------
+// Saving submits every field, so it stays disabled until the form holds the saved config:
+// saving defaults (e.g. an unchecked "开启登录验证") would silently switch protections off.
+function setSaveEnabled(on){ document.querySelectorAll('.save-btn').forEach(b => { b.disabled = !on; }); }
+
 async function load(){
+  setSaveEnabled(false);
   const res = await fetch('/api/config');
+  if(!res.ok){ setSaveMsg('err', `读取配置失败（HTTP ${res.status}），刷新页面再试`); return; }
   const cfg = await res.json();
 
   document.getElementById('panels').innerHTML = '';
   (cfg.panels || []).forEach(p => addPanelRow(p));
 
   const da = cfg.dashboard_auth || {};
-  // First run = nothing configured yet: no password and no data source (no BT panel, no agent
-  // has ever reported, Nightcord-Status off).
-  const agents = await fetch('/api/agents').then(r => r.ok ? r.json() : {agents: []}).catch(() => ({agents: []}));
-  const noSource = !(cfg.panels || []).length && !(agents.agents || []).length && !cfg.nightcord_status_enabled;
-  document.getElementById('oobeBanner').style.display = (!da.has_password && noSource) ? 'block' : 'none';
   document.getElementById('authEnabled').checked = !!da.enabled;
   document.getElementById('authUsername').value = da.username || '';
   document.getElementById('authMaxAttempts').value = da.max_attempts || 5;
@@ -378,6 +379,16 @@ async function load(){
   const bindSelect = document.getElementById('deployBindPanel');
   bindSelect.innerHTML = '<option value="">不绑定（用远端 hostname 当名字）</option>' +
     (cfg.panels || []).map(p => `<option value="${escapeAttr(p.name)}">${escapeAttr(p.name)}</option>`).join('');
+  setSaveEnabled(true);
+
+  // First run = nothing configured yet: no password and no data source (no BT panel, no agent has
+  // ever reported, Nightcord-Status off). Checked after the form is filled, so it never holds up saving.
+  const banner = document.getElementById('oobeBanner');
+  banner.style.display = 'none';
+  if(!da.has_password && !(cfg.panels || []).length && !cfg.nightcord_status_enabled){
+    const agents = await fetch('/api/agents').then(r => r.ok ? r.json() : {agents: []}).catch(() => ({agents: []}));
+    if(!(agents.agents || []).length) banner.style.display = 'block';
+  }
 }
 
 function collectPanels(){
@@ -396,6 +407,8 @@ function setSaveMsg(cls, text){
 }
 
 async function save(){
+  if(document.querySelector('.save-btn').disabled) return;
+  setSaveEnabled(false);
   setSaveMsg('', '保存中…');
   try{
     // 保存是整份配置一起提交：各页的输入框都在页面里（只是不显示），哪一页点保存都一样
@@ -440,6 +453,7 @@ async function save(){
     const data = await res.json();
     if(!res.ok){
       setSaveMsg('err', (data.errors || [data.error || '保存失败']).join('；'));
+      setSaveEnabled(true);
       return;
     }
     setSaveMsg('ok', '已保存 ✓');
@@ -449,6 +463,7 @@ async function save(){
     await load();
   }catch(e){
     setSaveMsg('err', '保存失败：' + e);
+    setSaveEnabled(true);
   }
 }
 

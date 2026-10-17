@@ -18,6 +18,14 @@ class FrontendSafetyTests(unittest.TestCase):
         self.assertIn("data-panel=\"${escapeAttr(panelName)}\"", source)
         self.assertIsNone(self.RAW_REMOTE.search(source))
 
+    def test_settings_cannot_save_before_config_is_loaded(self):
+        # Saving submits every field; with the form still at its defaults it would switch off
+        # login protection and notifications.
+        source = (ROOT / "static" / "settings.html").read_text(encoding="utf-8")
+        self.assertEqual(source.count('class="btn btn-accent save-btn" onclick="save()" disabled'), 3)
+        self.assertNotIn('onclick="save()">', source)
+        self.assertIn("setSaveEnabled(true);", source)
+
     def test_settings_escapes_remote_text_before_rendering(self):
         source = (ROOT / "static" / "settings.html").read_text(encoding="utf-8")
         self.assertIsNone(self.RAW_REMOTE.search(source))
