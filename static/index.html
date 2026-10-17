@@ -281,11 +281,27 @@ function render(animate){
   renderStatusBar();
 }
 
+// The last refresh failing, and how old the shown data is, are state: every redraw (switching
+// pivots included) must keep saying so, judged against the current time rather than timestamps
+// that freeze when the network does.
+let refreshFailed = false;
+const DATA_STALE_S = 45;   // three refresh periods (by eye)
+
+function staleNotes(){
+  const notes = [];
+  if(refreshFailed) notes.push('刷新失败');
+  if(lastData && lastData.ts && Date.now()/1000 - lastData.ts > DATA_STALE_S) notes.push(`数据 ${fmtAgo(lastData.ts)}`);
+  return notes;
+}
+
 function renderStatusBar(){
   const alert = document.getElementById('statusAlert');
   const summary = document.getElementById('statusSummary');
   const updated = document.getElementById('statusUpdated');
-  if(!lastData) return;
+  if(!lastData){
+    if(refreshFailed) summary.textContent = '刷新失败';
+    return;
+  }
   if(lastData.error){
     alert.hidden = true; summary.textContent = lastData.error; updated.textContent = '';
     return;
@@ -296,8 +312,9 @@ function renderStatusBar(){
   const attention = ps.filter(p => stateOf(p) === 'warn').length;
   alert.hidden = attention === 0;
   alert.textContent = `${attention} 需要关注`;
-  const note = remoteNote();   // next to the count, which stays visible at phone width
-  summary.textContent = `${online} / ${machines.length} 在线` + (note ? ` · ${note}` : '');
+  // Notes sit next to the count, which stays visible at phone width.
+  const notes = [...staleNotes(), remoteNote()].filter(Boolean);
+  summary.textContent = [`${online} / ${machines.length} 在线`, ...notes].join(' · ');
   updated.textContent = '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
 }
 
@@ -318,7 +335,7 @@ const REMOTE_STALE_S = 30;
 function remoteNote(){
   if(!lastData || lastData.error) return '';
   if(lastData.remote_pending) return '宝塔数据采集中';
-  if(lastData.remote_ts && (lastData.ts - lastData.remote_ts) > REMOTE_STALE_S){
+  if(lastData.remote_ts && (Date.now()/1000 - lastData.remote_ts) > REMOTE_STALE_S){
     return `宝塔数据 ${fmtAgo(lastData.remote_ts)}`;
   }
   return '';
@@ -680,10 +697,11 @@ async function refresh(animate){
   try{
     data = (await fetchJsonWithTimeout('/api/status', 10000)).data;
   }catch(e){
-    if(seq === statusSeq) document.getElementById('statusSummary').textContent = '刷新失败';
+    if(seq === statusSeq){ refreshFailed = true; renderStatusBar(); }
     return;
   }
   if(seq !== statusSeq) return;
+  refreshFailed = false;
   lastData = data;
   const r = route();
   // An open history item keeps its range buttons; only the chart data is reloaded.
