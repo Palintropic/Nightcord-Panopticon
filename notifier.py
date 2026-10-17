@@ -2,6 +2,7 @@
 告警通知模块：支持飞书自定义机器人 Webhook 与 SMTP 邮件。
 两个通道都是"尽力而为"——某一个失败不影响另一个，也不影响主流程。
 """
+import json
 import smtplib
 import threading
 import time
@@ -12,6 +13,14 @@ from email.header import Header
 import requests
 
 UNKNOWN_IP = "未知"
+
+
+def alert_key(source: str, name: str, suffix: str) -> str:
+    """
+    告警去重 key。机器名用 JSON 编码（带引号），不同来源、不同机器、不同问题永远拼不成同一个 key；
+    固定的合并告警 key（ALL_OFFLINE_KEY）不含引号，也不会跟任何机器名撞上。
+    """
+    return f"{source}:{json.dumps(name, ensure_ascii=False)}:{suffix}"
 
 
 class Notifier:
@@ -98,7 +107,7 @@ class Notifier:
         """
         alert 形如:
         {
-          "key": "面板A-cpu",          # 用于冷却去重
+          "key": alert_key("bt", "面板A", "cpu"),  # 用于冷却去重
           "server": "面板A",
           "alert_type": "CPU高占用告警",
           "content": "最近5分钟内机器CPU平均占用率为89.28%，高于告警值60%",
@@ -246,7 +255,7 @@ def evaluate_alerts(panel_result: dict, thresholds: dict):
 
     def make(suffix, alert_type, content):
         return {
-            "key": f"{name}-{suffix}",
+            "key": alert_key("bt", name, suffix),
             "server": name,
             "alert_type": alert_type,
             "content": content,
@@ -307,7 +316,7 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
 
     def make(suffix, alert_type, content):
         return {
-            "key": f"{panel_name}-{suffix}",
+            "key": alert_key("qingyuan", panel_name, suffix),
             "server": panel_name,
             "panels": [panel_name],  # 牵涉的青源机器，移除机器时据此静默作废（见 Notifier.watch_generations）
             "alert_type": alert_type,
@@ -336,7 +345,7 @@ def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
     return alerts
 
 
-ALL_OFFLINE_KEY = "qingyuan-all-offline"
+ALL_OFFLINE_KEY = "qingyuan-all-offline"  # 不含引号，见 alert_key
 ALL_OFFLINE_SERVER = "全部青源机器"
 
 
@@ -385,7 +394,7 @@ def plan_agent_alerts(states, thresholds: dict, now: float, stale_seconds: int, 
         if s["panel"] in offline_panels:
             last = datetime.fromtimestamp(s["seen_at"]).strftime("%Y-%m-%d %H:%M:%S")
             alerts.append({
-                "key": f"{s['panel']}-agent-offline",
+                "key": alert_key("qingyuan", s["panel"], "agent-offline"),
                 "server": s["panel"],
                 "panels": [s["panel"]],
                 "alert_type": "机器离线告警",

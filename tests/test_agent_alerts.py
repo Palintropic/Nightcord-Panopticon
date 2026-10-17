@@ -1,6 +1,6 @@
 import unittest
 
-from notifier import ALL_OFFLINE_KEY, ALL_OFFLINE_SERVER, Notifier, plan_agent_alerts
+from notifier import ALL_OFFLINE_KEY, ALL_OFFLINE_SERVER, Notifier, alert_key, evaluate_alerts, plan_agent_alerts
 
 NOW = 10_000
 STALE = 180
@@ -10,6 +10,10 @@ def state(panel, age, cpu=10.0, generation=0):
     return {"panel": panel, "seen_at": NOW - age, "generation": generation,
             "sample": {"cpu": cpu, "mem": 10.0, "disk": 10.0},
             "disk_detail": None, "ip_internal": None, "ip_external": None}
+
+
+def qk(panel, suffix):
+    return alert_key("qingyuan", panel, suffix)
 
 
 def no_active(_server):
@@ -22,7 +26,7 @@ class PlanAgentAlertsTests(unittest.TestCase):
 
     def test_three_missed_reports_is_offline(self):
         alerts, _ = self.plan([state("tokyo", 181), state("shanghai", 30)])
-        self.assertEqual([a["key"] for a in alerts], ["tokyo-agent-offline"])
+        self.assertEqual([a["key"] for a in alerts], [qk("tokyo", "agent-offline")])
 
     def test_within_threshold_is_online(self):
         alerts, _ = self.plan([state("tokyo", 180), state("shanghai", 30)])
@@ -34,16 +38,16 @@ class PlanAgentAlertsTests(unittest.TestCase):
 
     def test_single_machine_offline_is_not_treated_as_all_offline(self):
         alerts, _ = self.plan([state("tokyo", 600)])
-        self.assertEqual([a["key"] for a in alerts], ["tokyo-agent-offline"])
+        self.assertEqual([a["key"] for a in alerts], [qk("tokyo", "agent-offline")])
 
     def test_offline_machine_keeps_its_open_alerts(self):
-        active = {"tokyo": ["tokyo-agent-cpu", "tokyo-agent-offline"]}
+        active = {"tokyo": [qk("tokyo", "agent-cpu"), qk("tokyo", "agent-offline")]}
         _, keep = self.plan([state("tokyo", 600), state("shanghai", 30)], lambda s: active.get(s, []))
-        self.assertEqual(keep, {"tokyo-agent-cpu", "tokyo-agent-offline"})
+        self.assertEqual(keep, {qk("tokyo", "agent-cpu"), qk("tokyo", "agent-offline")})
 
     def test_online_machine_still_gets_threshold_alerts(self):
         alerts, _ = self.plan([state("tokyo", 30, cpu=95.0)])
-        self.assertEqual([a["key"] for a in alerts], ["tokyo-agent-cpu"])
+        self.assertEqual([a["key"] for a in alerts], [qk("tokyo", "agent-cpu")])
 
 
 class RecordingNotifier(Notifier):
@@ -144,6 +148,19 @@ class RecoveryTests(unittest.TestCase):
         self.run_rounds(n, [abc[1:]])
         self.assertEqual(n.sent, [("全部机器同时失联", "red"), ("全部机器同时失联", "red")])
         self.assertEqual(n._active[ALL_OFFLINE_KEY]["panels"], ["b", "c"])
+
+    def test_bt_panel_name_cannot_collide_with_merged_key(self):
+        n = RecordingNotifier(watched={"a": 0, "b": 0})
+        bt = {"name": "qingyuan-all", "online": False, "url": "http://x", "error": "down"}
+        for _ in range(2):
+            bt_alerts = evaluate_alerts(bt, {})
+            alerts, keep = plan_agent_alerts([state("a", 600), state("b", 600)], {}, NOW, STALE, n.active_keys_for)
+            for a in bt_alerts + alerts:
+                n.notify(a)
+            n.resolve({a["key"] for a in bt_alerts + alerts} | keep)
+        self.assertEqual(n.sent, [("面板离线告警", "red"), ("全部机器同时失联", "red")])
+        n.resolve({ALL_OFFLINE_KEY})            # 宝塔面板恢复了
+        self.assertEqual(n.sent[-1], ("面板离线告警已恢复", "green"))
 
     def test_merged_alert_gaining_a_member_is_not_recovered(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0, "c": 0})
