@@ -378,7 +378,12 @@ def _merge_qingyuan(results):
             by_ip.setdefault(host, r)
 
     now = time.time()
-    for state in _agent_states(now):
+    states = _agent_states(now)
+    # 名字绑定优先：先让所有同名的机器认领自己的卡片，再用 IP 给剩下的兜底。共用 NAT 出口的
+    # 机器 IP 一样，按 IP 兜底时不能覆盖已经被认领的卡片，否则一台离线机器能把在线机器的卡片标成离线。
+    states.sort(key=lambda st: st["panel"] not in by_name)
+    claimed = set()
+    for state in states:
         panel_name = state["panel"]
         sample = state["sample"] or {}
         offline_error = None if state["online"] else (
@@ -397,12 +402,15 @@ def _merge_qingyuan(results):
             "seen_at": state["seen_at"],
             "error": offline_error,
         }
-        existing = (
-            by_name.get(panel_name)
-            or by_ip.get(state["ip_internal"])
-            or by_ip.get(state["ip_external"])
-        )
-        if existing is not None:
+        existing = by_name.get(panel_name)
+        if existing is None:
+            for ip in (state["ip_internal"], state["ip_external"]):
+                candidate = by_ip.get(ip)
+                if candidate is not None and id(candidate) not in claimed:
+                    existing = candidate
+                    break
+        if existing is not None and id(existing) not in claimed:
+            claimed.add(id(existing))
             existing["qingyuan"] = qingyuan
         else:
             results.append({
