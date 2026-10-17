@@ -2,54 +2,42 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>登录 · 25時、ナイトコードで。 Panopticon</title>
+<title>登录 · Panopticon</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/uwp.css">
 <style>
-  :root{
-    --bg:#0f1115; --card:#171a21; --border:#262b36; --text:#e6e8ee;
-    --muted:#8a90a2; --ok:#3ecf8e; --bad:#f0506e; --accent:#5b8cff;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-       font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-       background:var(--bg);color:var(--text)}
-  .box{width:100%;max-width:360px;padding:28px 26px;background:var(--card);border:1px solid var(--border);
-       border-radius:14px}
-  h1{font-size:18px;margin:0 0 4px;font-weight:600;text-align:center}
-  .sub{color:var(--muted);font-size:12px;text-align:center;margin-bottom:22px}
-  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px}
-  input[type=text],input[type=password]{
-    width:100%;background:#0c0e13;border:1px solid var(--border);border-radius:8px;color:var(--text);
-    padding:9px 10px;font-size:13px;
-  }
-  button{cursor:pointer;width:100%;border-radius:8px;border:1px solid var(--border);background:#1d212b;
-         color:var(--text);padding:10px 14px;font-size:13px;margin-top:14px}
-  button:hover{border-color:var(--accent)}
-  button.primary{background:var(--accent);border-color:var(--accent);color:#0c0e13;font-weight:600}
-  .divider{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:11px;margin:18px 0}
-  .divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
-  #msg{font-size:12px;margin-top:12px;min-height:16px}
-  #msg.err{color:var(--bad)} #msg.ok{color:var(--ok)}
+  /* Plain page, no card (as PNS): app name as a pivot title, a Subheader, then fields.
+     Column width 360 and its centring on wide screens are by eye. */
+  .auth-shell{min-height:100vh;display:flex;justify-content:center;align-items:center;padding:var(--group-gap) var(--page-margin)}
+  .auth-panel{width:min(360px,100%);display:flex;flex-direction:column;gap:var(--gutter)}
+  .auth-panel .pivot-title{padding:0}
+  .auth-panel h1{margin:0 0 var(--gutter);font:var(--type-subheader)}
+  .auth-panel form{display:flex;flex-direction:column}
+  .auth-submit{align-self:flex-start;min-width:120px;margin-top:var(--gutter)}   /* min width by eye */
+  .divider{display:flex;align-items:center;gap:var(--gutter);color:var(--SystemBaseMedium);font:var(--type-caption)}
+  .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--SystemBaseLow)}
+  #msg{min-height:20px}
+  #msg.err{color:var(--warn)} #msg.ok{color:var(--SystemBaseMedium)}
 </style>
 </head>
 <body>
-<div class="box">
-  <h1>25:00</h1>
-  <div class="sub">Nightcord Panopticon · 请登录</div>
+<div class="auth-shell">
+  <div class="auth-panel">
+    <div class="pivot-title">Panopticon</div>
+    <h1>登录</h1>
 
-  <button class="primary" id="passkeyBtn" onclick="loginWithPasskey()">🔑 使用 Passkey 登录</button>
+    <button class="btn btn-accent" id="passkeyBtn" onclick="loginWithPasskey()">使用 Passkey 登录</button>
 
-  <div class="divider">或</div>
+    <div class="divider">或者用密码</div>
 
-  <form id="pwForm" onsubmit="loginWithPassword(event)">
-    <label>用户名</label>
-    <input type="text" id="username" autocomplete="username">
-    <label>密码</label>
-    <input type="password" id="password" autocomplete="current-password">
-    <button type="submit">登录</button>
-  </form>
+    <form id="pwForm" onsubmit="loginWithPassword(event)">
+      <label class="field">用户名<input type="text" id="username" autocomplete="username"></label>
+      <label class="field">密码<input type="password" id="password" autocomplete="current-password"></label>
+      <button class="btn auth-submit" type="submit">登录</button>
+    </form>
 
-  <div id="msg"></div>
+    <div id="msg"></div>
+  </div>
 </div>
 
 <script>

@@ -59,7 +59,13 @@ def redact_for_display(cfg: dict) -> dict:
         },
     }
 
-    return {"panels": panels_out, "dashboard_auth": dashboard_auth, "notifications": notifications}
+    return {
+        "panels": panels_out,
+        "dashboard_auth": dashboard_auth,
+        "notifications": notifications,
+        # 只读：设置页判断"是不是首次配置"用，这一段配置没有设置页 UI
+        "nightcord_status_enabled": bool((cfg.get("nightcord_status") or {}).get("enabled")),
+    }
 
 
 def _clean_str(v):

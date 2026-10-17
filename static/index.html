@@ -2,72 +2,117 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>25時、ナイトコードで。 Panopticon</title>
+<title>Panopticon</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/uwp.css">
 <style>
-  :root{
-    --bg:#0f1115; --card:#171a21; --border:#262b36; --text:#e6e8ee;
-    --muted:#8a90a2; --ok:#3ecf8e; --warn:#f5a623; --bad:#f0506e; --accent:#5b8cff;
-    /* 25時、ナイトコードで。四人の合わせ色（衣装リボンカラー基準） */
-    --kanade:#e0526b;  /* 宵崎奏 - 赤 */
-    --mafuyu:#5b8cff;  /* 朝比奈まふゆ - 青 */
-    --ena:#f0c93b;     /* 東雲絵名 - 黄 */
-    --mizuki:#f2a0c4;  /* 暁山瑞希 - ピンク */
+  /* Dashboard-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
+
+  /* Stats strip (as PNS): Subheader numbers over Caption labels. */
+  .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gutter);margin-top:var(--gutter)}
+  @media (max-width:640px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))} }
+  .stat-value{font:var(--type-subheader);font-variant-numeric:tabular-nums}
+  .stat-label{font:var(--type-caption);color:var(--SystemBaseMedium)}
+
+  /* Machine table: list items 40 high; square status mark sized by eye (as PNS's score dot). */
+  .machine-list{margin:var(--gutter) calc(-1 * var(--page-margin)) 0}
+  .machine-row,.machine-head{display:grid;grid-template-columns:16px minmax(0,1fr) 72px 72px 72px 132px;
+              align-items:center;gap:var(--gutter);min-height:var(--list-item-min-height);
+              padding:8px var(--page-margin);text-decoration:none}
+  .machine-head{min-height:0;padding-top:0;padding-bottom:4px;font:var(--type-caption);color:var(--SystemBaseMedium)}
+  .machine-row:hover{background:rgb(255 255 255 / 0.1)}   /* by eye: list pointer-over */
+  @media (prefers-color-scheme: light){ .machine-row:hover{background:rgb(0 0 0 / 0.06)} }
+  .machine-row .name{font:var(--type-base);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .num{font-variant-numeric:tabular-nums;text-align:right}
+  .seen{font:var(--type-caption);color:var(--SystemBaseMedium);text-align:right}
+  .seen.warn,.summary.warn{color:var(--warn)}
+  .mark{width:8px;height:8px;background:var(--SystemBaseMedium)}
+  .mark.ok{background:var(--ok)} .mark.caution{background:var(--caution)} .mark.warn{background:var(--warn)}
+  .machine-row .summary{display:none}
+  @media (max-width:640px){
+    .machine-head{display:none}
+    .machine-row{grid-template-columns:16px minmax(0,1fr);row-gap:2px}
+    .machine-row .num,.machine-row .seen{display:none}
+    .machine-row .summary{display:block;grid-column:2;font:var(--type-caption);color:var(--SystemBaseMedium)}
   }
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-       background:var(--bg);color:var(--text)}
-  header{padding:20px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-  header h1{font-size:18px;margin:0;font-weight:600}
-  header .meta{color:var(--muted);font-size:12px}
-  #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;padding:20px 28px}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 18px;
-        border-top:3px solid var(--accent-color, var(--accent));position:relative}
-  .card h2{margin:0 0 4px;font-size:15px;display:flex;align-items:center;gap:8px}
-  .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
-  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
-  .url{color:var(--muted);font-size:12px;margin-bottom:12px;word-break:break-all}
-  .row{display:flex;justify-content:space-between;font-size:13px;padding:4px 0;border-bottom:1px dashed var(--border)}
-  .row:last-child{border-bottom:none}
-  .row .k{color:var(--muted)}
-  .bar{height:6px;border-radius:4px;background:#232732;overflow:hidden;margin-top:3px}
-  .bar>span{display:block;height:100%;background:var(--accent)}
-  .bar.warn>span{background:var(--warn)} .bar.bad>span{background:var(--bad)}
-  .section-title{font-size:12px;color:var(--muted);margin:12px 0 6px;text-transform:uppercase;letter-spacing:.04em}
-  table{width:100%;border-collapse:collapse;font-size:12px}
-  td,th{padding:3px 4px;text-align:left;border-bottom:1px solid var(--border)}
-  .badge{display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px}
-  .badge.ok{background:rgba(62,207,142,.15);color:var(--ok)}
-  .badge.bad{background:rgba(240,80,110,.15);color:var(--bad)}
-  .badge.warn{background:rgba(245,166,35,.15);color:var(--warn)}
-  .err{color:var(--bad);font-size:12px;white-space:pre-wrap}
-  details{margin-top:8px}
-  summary{cursor:pointer;color:var(--muted);font-size:11px}
-  pre{max-height:200px;overflow:auto;font-size:11px;background:#0c0e13;padding:8px;border-radius:6px}
-  #empty{padding:60px;text-align:center;color:var(--muted)}
-  header .tagline{font-size:11px;color:var(--muted);margin-top:2px;font-style:italic}
-  footer{padding:24px 28px;text-align:center;color:var(--muted);font-size:11px;border-top:1px solid var(--border);margin-top:12px}
+
+  /* Server tiles: a solid block, white text, label bottom-left with an 8 inset; no border, radius
+     or shadow. Phone width keeps the 304 wide tile; wider windows stretch tiles to fill the row
+     and make them 164 high (both by eye, a desktop deviation from the fixed W10M sizes). */
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(304px,1fr));gap:8px;margin-top:var(--group-gap)}
+  .tile{position:relative;display:block;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
+        -webkit-tap-highlight-color:transparent}
+  @media (min-width:640px){ .tile{height:164px} }
+  .tile-inner{position:absolute;inset:0;overflow:hidden;padding:8px;background:var(--tile-bg);
+              transition:transform 200ms cubic-bezier(0,0,0.2,1)}   /* by eye: release */
+  .tile.pressed .tile-inner{transition-duration:90ms}                 /* by eye: press */
+  .tile.state-ok{--tile-bg:var(--SystemAccent)}
+  .tile.state-warn{--tile-bg:var(--warn)}
+  .tile.state-caution{--tile-bg:var(--caution);color:#000000}  /* deviation: white on amber fails contrast */
+  .tile.state-offline{--tile-bg:var(--SystemChromeGray)}
+  .tile .readings{display:flex;gap:16px}
+  .tile .reading .t-value{font:var(--type-title);font-variant-numeric:tabular-nums}
+  .tile .reading .t-label{font:var(--type-caption);opacity:.8}
+  .tile svg{position:absolute;left:8px;right:8px;bottom:32px;width:calc(100% - 16px);height:44px}
+  .tile .tile-label{position:absolute;left:8px;bottom:8px;right:8px;display:flex;justify-content:space-between;gap:8px;
+                    font:var(--type-control);white-space:nowrap}
+  .tile .tile-label .name{overflow:hidden;text-overflow:ellipsis}
+  .tile .tile-label .seen{font:var(--type-caption);opacity:.8;align-self:flex-end}
+
+  /* Detail */
+  .fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));column-gap:var(--group-gap)}
+  .metric{margin-bottom:var(--gutter)}
+  .metric-label{font:var(--type-caption);color:var(--SystemBaseMedium);margin-bottom:4px}
+  .metric-value{font:var(--type-subtitle);font-variant-numeric:tabular-nums}
+  .metric-row{display:flex;justify-content:space-between;align-items:baseline;gap:var(--gutter)}
+  .raw{margin-top:8px;max-height:240px;overflow:auto;padding:8px;background:var(--SystemChromeLow);
+       font:12px/16px ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-all}
+  .raw[hidden]{display:none}
+  .chart svg{display:block;width:100%;height:200px}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font:var(--type-caption)}
+  .legend i{display:inline-block;width:12px;height:2px;vertical-align:middle;margin-right:6px}
+
+  @media (prefers-reduced-motion: reduce){ .tile-inner{transition:none} }
 </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1>25時、ナイトコードで。 <span style="color:var(--muted);font-weight:400">/ Panopticon</span></h1>
-    <div class="tagline">正体不明の音楽サークル、今夜も稼働状況を見守る。</div>
-  </div>
-  <div style="text-align:right">
-    <div class="meta" id="updated">加载中…</div>
-    <a href="/settings" style="font-size:11px;color:var(--muted)">⚙ 设置</a>
-    <a href="#" onclick="logout();return false" style="font-size:11px;color:var(--muted);margin-left:10px">⎋ 退出登录</a>
-  </div>
-</header>
-<div id="grid"></div>
-<div id="empty" style="display:none">还没配置任何面板，去 <a href="/settings" style="color:var(--accent)">设置页面</a> 添加一个吧。</div>
-<footer>25:00 — サーバーの向こう側、今日も奏でる。 · Nightcord Series</footer>
+<div class="shell">
+  <header class="pivot">
+    <div class="pivot-title">
+      <button class="back" id="back" aria-label="返回" hidden>‹</button>
+      <span id="title">Panopticon</span>
+    </div>
+    <nav class="pivot-headers" id="pivotHeaders" role="tablist"></nav>
+  </header>
+  <main class="content" id="content"></main>
+  <footer class="status-bar">
+    <a class="status-item status-alert" id="statusAlert" href="#p=1" hidden></a>
+    <span class="status-item status-summary"><span id="statusSummary">加载中…</span></span>
+    <span class="status-spacer"></span>
+    <span class="status-item status-optional" id="statusUpdated"></span>
+    <button class="status-item" id="refresh">刷新</button>
+    <button class="status-item status-optional" id="logout">退出登录</button>
+  </footer>
+</div>
 
 <script>
 const REFRESH_MS = 15000;
+const CAUTION_BAND = 70;   // caution from 70 %, carried over from the previous dashboard's bars
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const METRICS_RANGE_OPTIONS = [
+  {label:'1 小时', hours:1}, {label:'6 小时', hours:6}, {label:'24 小时', hours:24}, {label:'7 天', hours:168},
+];
 
+let lastData = null;
+let tileHistory = {};          // panel -> last-hour samples for the tile chart
+let detailPivot = 0;
+const metricsRangeState = {};
+
+// ---------- helpers ----------
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeAttr(s){ return escapeHtml(s); }
 function fmtBytes(v){
   if(v === undefined || v === null) return '-';
   if(typeof v === 'string') return v;
@@ -75,326 +120,616 @@ function fmtBytes(v){
   while(v>=1024 && i<units.length-1){v/=1024;i++;}
   return v.toFixed(1)+units[i];
 }
-
-function pct(used,total){
-  if(!total) return 0;
-  return Math.min(100, Math.round((used/total)*100));
+function fmtPct(v){ return (v === undefined || v === null || isNaN(v)) ? '-' : Number(v).toFixed(1) + '%'; }
+function fmtAgo(ts){
+  if(!ts) return '-';
+  const s = Math.max(0, Date.now()/1000 - ts);
+  if(s < 60) return '刚刚';
+  if(s < 3600) return `${Math.round(s/60)} 分钟前`;
+  if(s < 86400) return `${Math.round(s/3600)} 小时前`;
+  return new Date(ts*1000).toLocaleDateString();
 }
-
-function barClass(p){
-  if(p>=90) return 'bad';
-  if(p>=70) return 'warn';
+function pct(used,total){ return total ? Math.min(100, Math.round((used/total)*100)) : undefined; }
+function thresholds(){ return (lastData && lastData.thresholds) || {cpu:90, mem:90, disk:85}; }
+function levelOf(value, threshold){
+  if(value === undefined || value === null) return '';
+  if(value >= threshold) return 'warn';
+  if(value >= CAUTION_BAND) return 'caution';
   return '';
 }
 
-const QY_TAG = '<span style="color:var(--muted);font-size:10px;margin-left:4px">青源实时</span>';
-
-function renderSystem(sys, net, qingyuan){
-  if(!sys && !net && !qingyuan) return '<div class="err">无数据</div>';
-  let html = '';
-  if(sys){
-    html += `<div class="row"><span class="k">系统</span><span>${escapeHtml(sys.system ?? '-')}</span></div>`;
-    html += `<div class="row"><span class="k">运行时长</span><span>${escapeHtml(sys.time ?? '-')}</span></div>`;
-  }
-  // 青源 agent 是本机直采，比宝塔面板 API 转发的数据更实时，两边都有时优先用青源的 CPU/内存
-  if(qingyuan && qingyuan.cpu !== undefined && qingyuan.cpu !== null){
-    html += `<div class="row"><span class="k">CPU${QY_TAG}</span><span>${Number(qingyuan.cpu).toFixed(1)}%</span></div>
-      <div class="bar ${barClass(qingyuan.cpu)}"><span style="width:${Math.min(100,qingyuan.cpu)}%"></span></div>`;
-  } else if(sys){
-    const cpuUsed = sys.cpuRealUsed ?? sys.CpuRealUsed ?? (net && net.cpu ? net.cpu[0] : undefined);
-    if(cpuUsed !== undefined){
-      html += `<div class="row"><span class="k">CPU</span><span>${Number(cpuUsed).toFixed(1)}%</span></div>
-        <div class="bar ${barClass(cpuUsed)}"><span style="width:${Math.min(100,cpuUsed)}%"></span></div>`;
-    }
-  }
-  if(qingyuan && qingyuan.mem !== undefined && qingyuan.mem !== null){
-    html += `<div class="row"><span class="k">内存${QY_TAG}</span><span>${Number(qingyuan.mem).toFixed(1)}%</span></div>
-      <div class="bar ${barClass(qingyuan.mem)}"><span style="width:${Math.min(100,qingyuan.mem)}%"></span></div>`;
-  } else if(sys){
-    const memUsed = sys.MemRealUsed ?? sys.memRealUsed;
-    const memTotal = sys.MemTotal ?? sys.memTotal;
-    if(memUsed !== undefined && memTotal){
-      const p = pct(memUsed, memTotal);
-      html += `<div class="row"><span class="k">内存</span><span>${memUsed}G / ${memTotal}G</span></div>
-        <div class="bar ${barClass(p)}"><span style="width:${p}%"></span></div>`;
-    }
-  }
-  if(net && net.load){
-    const l = net.load;
-    html += `<div class="row"><span class="k">负载 (1/5/15)</span><span>${escapeHtml(l.one)} / ${escapeHtml(l.five)} / ${escapeHtml(l.fifteen)}</span></div>`;
-  }
-  if(net){
-    html += `<div class="row"><span class="k">网络 ↑/↓</span><span>${escapeHtml(fmtBytes(net.up*1024))}/s ↑ &nbsp; ${escapeHtml(fmtBytes(net.down*1024))}/s ↓</span></div>`;
-  }
-  return html || '<div class="err">无数据</div>';
+// Qingyuan data merged onto a BT card is ignored once the agent has gone quiet.
+function liveQingyuan(p){
+  const q = p.qingyuan;
+  if(!q) return null;
+  if(p.kind !== 'qingyuan-only' && q.online === false) return null;
+  return q;
+}
+function isOffline(p){ return p.online === false || (p.qingyuan && p.qingyuan.online === false); }
+// No usable numbers: an agent-only machine that stopped reporting (its numbers are stale), or a card
+// where no source produced any number at all. A BT card with a failed endpoint, or whose attached
+// agent went quiet, still shows whatever numbers it has, flagged with what is wrong.
+function noMetrics(p){
+  if(p.kind === 'qingyuan-only') return !!(p.qingyuan && p.qingyuan.online === false);
+  const m = machineMetrics(p);
+  return [m.cpu, m.mem, m.disk].every(v => v === undefined || v === null);
 }
 
-function renderIp(p, qingyuan){
-  // 内网 IP 只有本机 agent（青源）拿得到；外网 IP 宝塔面板也能靠 url 解析出一个参考值
-  const ext = (qingyuan && qingyuan.ip_external) || p.ip_external;
-  const int_ = qingyuan && qingyuan.ip_internal;
-  if(!ext && !int_) return '';
-  const parts = [];
-  if(ext) parts.push(`${escapeHtml(ext)}(外)`);
-  if(int_) parts.push(`${escapeHtml(int_)}(内)`);
-  return `<div class="row"><span class="k">IP 地址</span><span>${parts.join(' ')}</span></div>`;
-}
 
-function renderDisk(disk, qingyuanDetail){
-  // 青源直采的挂载点用真实 total/used；跟宝塔报的同一个挂载点重叠时青源的更准，直接覆盖，
-  // 宝塔有但青源没报的（比如青源还没升级到能采多盘的版本）保留宝塔原样；
-  // 青源有但宝塔没有的挂载点（数据盘、宝塔压根不知道的盘）额外补一行，不再对它们视而不见。
-  const qyMap = new Map((qingyuanDetail || []).map(d => [d.path, d]));
+function diskRows(p){
+  const q = liveQingyuan(p);
+  const qyDetail = (q && q.disk_detail && q.disk_detail.length)
+    ? q.disk_detail
+    : (q && q.disk !== undefined && q.disk !== null ? [{path:'/', total:null, used:null, percent:q.disk}] : []);
+  const qyMap = new Map(qyDetail.map(d => [d.path, d]));
   const btPaths = new Set();
   const rows = [];
-
-  (disk || []).forEach(d=>{
+  (p.disk || []).forEach(d => {
     btPaths.add(d.path);
     const qy = qyMap.get(d.path);
     if(qy){
-      rows.push({path: d.path, usedTotal: `${fmtBytes(qy.used)}/${fmtBytes(qy.total)}`,
-        percent: qy.percent, label: `${qy.percent.toFixed(1)}%${QY_TAG}`});
+      rows.push({path:d.path, usedTotal:`${fmtBytes(qy.used)} / ${fmtBytes(qy.total)}`, percent:qy.percent});
     } else {
-      const [total, used, avail, percentStr] = d.size || [];
-      const p = parseInt(percentStr) || 0;
-      rows.push({path: d.path || '-', usedTotal: `${used||'-'}/${total||'-'}`, percent: p, label: percentStr || (p+'%')});
+      const [total, used, , percentStr] = d.size || [];
+      rows.push({path:d.path || '-', usedTotal:`${used||'-'} / ${total||'-'}`, percent:parseInt(percentStr) || 0});
     }
   });
-  (qingyuanDetail || []).forEach(qy=>{
+  qyDetail.forEach(qy => {
     if(btPaths.has(qy.path)) return;
-    rows.push({path: qy.path, usedTotal: `${fmtBytes(qy.used)}/${fmtBytes(qy.total)}`,
-      percent: qy.percent, label: `${qy.percent.toFixed(1)}%${QY_TAG}`});
+    rows.push({path:qy.path, usedTotal:`${fmtBytes(qy.used)} / ${fmtBytes(qy.total)}`, percent:qy.percent});
   });
+  return rows;
+}
 
-  if(!rows.length) return '<div class="err">无数据</div>';
-  return '<table>' + rows.map(r =>
-    `<tr><td>${escapeHtml(r.path)}</td><td>${escapeHtml(r.usedTotal)}</td>
-      <td><span class="badge ${r.percent>=85?'bad':'ok'}">${escapeHtml(r.label)}</span></td></tr>`
-  ).join('') + '</table>';
+function machineMetrics(p){
+  const q = liveQingyuan(p);
+  const sys = p.system || {};
+  const net = p.network || {};
+  const cpu = q && q.cpu !== null && q.cpu !== undefined ? q.cpu : (sys.cpuRealUsed ?? sys.CpuRealUsed ?? (net.cpu ? net.cpu[0] : undefined));
+  const qyMem = q && q.mem !== null && q.mem !== undefined;
+  const memUsed = sys.MemRealUsed ?? sys.memRealUsed, memTotal = sys.MemTotal ?? sys.memTotal;
+  const mem = qyMem ? q.mem : pct(memUsed, memTotal);
+  // BT reports absolute memory; keep "used / total" next to the percentage when that is the source.
+  const memText = !qyMem && memUsed !== undefined && memTotal ? `${memUsed}G / ${memTotal}G` : null;
+  const disks = diskRows(p);
+  const disk = disks.length ? Math.max(...disks.map(d => d.percent)) : undefined;
+  return {cpu, mem, memText, disk, disks};
+}
+
+// '' = healthy, 'caution' = near a threshold, 'warn' = needs attention.
+function stateOf(p){
+  if(p.kind === 'nightcord-status'){
+    if(p.online === false) return 'warn';
+    const ts = (p.targets || []).map(t => t.status);
+    if(ts.includes('down')) return 'warn';
+    if(ts.includes('degraded') || ts.includes('unknown')) return 'caution';
+    return '';
+  }
+  if(isOffline(p)) return 'warn';
+  const th = thresholds(), m = machineMetrics(p);
+  const levels = [levelOf(m.cpu, th.cpu), levelOf(m.mem, th.mem), levelOf(m.disk, th.disk)];
+  if(levels.includes('warn')) return 'warn';
+  if(levels.includes('caution')) return 'caution';
+  return '';
+}
+function panels(){ return (lastData && lastData.panels) || []; }
+
+// ---------- routing ----------
+// Top-level pivot items. 告警 / 终端 / 文件 are reserved for planned features and render a
+// placeholder until they exist; 设置 is its own page (/settings).
+const TOP_PIVOTS = [
+  {label:'总览', render:() => overview()},
+  {label:'机器', render:() => machinesView()},
+  {label:'告警', render:() => reserved('告警历史',
+    '现在告警发出去就没了，看板上翻不到。这一页以后会按时间列出每条告警和它的恢复，能看出某台机器昨晚几点出过什么事、持续了多久。',
+    '需要先把告警记录写进数据库。')},
+  {label:'终端', render:() => reserved('网页终端（SSH）',
+    '在浏览器里直接连到机器的终端。打开前要重新验证一次 Passkey，能连哪几台机器由 Palintropic SSO 分配，每次连接都会记进审计日志。',
+    '等 SSO 上线后开放。')},
+  {label:'文件', render:() => reserved('文件管理',
+    '浏览、上传、下载、在线编辑机器上的文件。跟终端走同一扇门：同一条 SSH 连接上的 SFTP，同样由 SSO 授权、同样记审计。',
+    '等 SSO 上线后开放，和终端一起做。')},
+];
+// #p=<n> top-level pivot item, #m=<name> machine detail.
+function route(){
+  const m = location.hash.match(/^#m=(.*)$/);
+  if(m){
+    try{ return {view:'detail', name:decodeURIComponent(m[1])}; }
+    catch(e){ return {view:'list', pivot:1}; }   // malformed link: fall back to the machine list
+  }
+  const n = Number((location.hash.match(/^#p=(\d+)$/) || [])[1] || 0);
+  return {view:'list', pivot: n < TOP_PIVOTS.length ? n : 0};
+}
+
+function reserved(title, what, when){
+  return `<div class="group"><div class="group-header">${title}</div>
+    <div class="description">${what}</div>
+    <div class="caption">${when}</div></div>`;
+}
+
+// ---------- rendering ----------
+function render(animate){
+  const r = route();
+  const back = document.getElementById('back');
+  const title = document.getElementById('title');
+  const headers = document.getElementById('pivotHeaders');
+  let html;
+  if(r.view === 'detail'){
+    const p = panels().find(x => x.name === r.name);
+    back.hidden = false;
+    title.textContent = r.name;
+    const pivots = p ? detailPivots(p) : [];
+    detailPivot = Math.min(detailPivot, Math.max(0, pivots.length - 1));
+    headers.innerHTML = pivots.map((pv, i) =>
+      `<button class="pivot-header-item" role="tab" aria-selected="${i === detailPivot}" data-detail-pivot="${i}">${pv.label}</button>`).join('');
+    html = p ? pivots[detailPivot].render(p)
+             : `<div class="empty-hint">${lastData ? '找不到这台机器，可能已经被移除。' : '加载中…'}</div>`;
+  } else {
+    back.hidden = true;
+    title.textContent = 'Panopticon';
+    headers.innerHTML = TOP_PIVOTS.map((pv, i) =>
+      `<button class="pivot-header-item" role="tab" aria-selected="${i === r.pivot}" data-pivot="${i}">${pv.label}</button>`).join('')
+      + '<a class="pivot-header-item" role="tab" aria-selected="false" href="/settings">设置</a>';
+    html = TOP_PIVOTS[r.pivot].render();
+  }
+  const content = document.getElementById('content');
+  content.innerHTML = `<div${animate && !reduceMotion.matches ? ' class="entering"' : ''}>${html}</div>`;
+  if(r.view === 'detail'){
+    const p = panels().find(x => x.name === r.name);
+    if(p && detailPivots(p)[detailPivot].render === historyItem) loadChart(p.name);
+  }
+  renderStatusBar();
+}
+
+// The last refresh failing, and how old the shown data is, are state: every redraw (switching
+// pivots included) must keep saying so, judged against the current time rather than timestamps
+// that freeze when the network does.
+let refreshFailed = false;
+const DATA_STALE_S = 45;   // three refresh periods (by eye)
+
+function staleNotes(){
+  const notes = [];
+  if(refreshFailed) notes.push('刷新失败');
+  if(lastData && lastData.ts && Date.now()/1000 - lastData.ts > DATA_STALE_S) notes.push(`数据 ${fmtAgo(lastData.ts)}`);
+  return notes;
+}
+
+function renderStatusBar(){
+  const alert = document.getElementById('statusAlert');
+  const summary = document.getElementById('statusSummary');
+  const updated = document.getElementById('statusUpdated');
+  if(!lastData){
+    if(refreshFailed) summary.textContent = summary.title = '刷新失败';
+    return;
+  }
+  if(lastData.error){
+    alert.hidden = true; summary.textContent = summary.title = lastData.error; updated.textContent = '';
+    return;
+  }
+  const ps = panels();
+  const machines = ps.filter(p => p.kind !== 'nightcord-status');
+  const online = machines.filter(p => !isOffline(p)).length;
+  const attention = ps.filter(p => stateOf(p) === 'warn').length;
+  alert.hidden = attention === 0;
+  alert.textContent = `${attention} 需要关注`;
+  // Notes sit next to the count, which stays visible at phone width.
+  const notes = [...staleNotes(), remoteNote()].filter(Boolean);
+  summary.textContent = [`${online} / ${machines.length} 在线`, ...notes].join(' · ');
+  summary.title = summary.textContent;
+  updated.textContent = '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
+}
+
+function noData(){
+  if(!lastData) return '<div class="empty-hint">加载中…</div>';
+  if(lastData.error) return `<div class="empty-hint">${escapeHtml(lastData.error)}</div>`;
+  if(!panels().length){
+    return lastData.remote_pending
+      ? '<div class="empty-hint">正在采集宝塔面板 / Nightcord-Status 的数据…</div>'
+      : '<div class="empty-hint">还没有机器上报。去设置里部署青源 agent 吧。</div>';
+  }
+  return '';
+}
+
+// Remote sources (BT, Nightcord-Status) are fetched in the background; say so when their part is
+// still loading or older than three refresh periods (by eye), since the agent data is always fresh.
+const REMOTE_STALE_S = 30;
+function remoteNote(){
+  if(!lastData || lastData.error) return '';
+  if(lastData.remote_pending) return '宝塔数据采集中';
+  if(lastData.remote_ts && (Date.now()/1000 - lastData.remote_ts) > REMOTE_STALE_S){
+    return `宝塔数据 ${fmtAgo(lastData.remote_ts)}`;
+  }
+  return '';
+}
+
+function stat(value, label, cls){
+  return `<div><div class="stat-value ${cls || ''}">${value}</div><div class="stat-label">${label}</div></div>`;
+}
+
+function overview(){
+  const empty = noData();
+  if(empty) return empty;
+  const ps = panels();
+  const machines = ps.filter(p => p.kind !== 'nightcord-status');
+  const online = machines.filter(p => !isOffline(p)).length;
+  const attention = ps.filter(p => stateOf(p) === 'warn').length;
+  const caution = ps.filter(p => stateOf(p) === 'caution').length;
+  return `<div class="stats">
+    ${stat(machines.length, '机器')}
+    ${stat(online, '在线', 'ok')}
+    ${stat(attention, '需要关注', attention ? 'warn' : '')}
+    ${stat(caution, '接近阈值', caution ? 'caution' : '')}
+  </div>
+  <div class="tiles">${ps.map(tile).join('')}</div>
+  <div class="caption" style="margin-top:8px">磁贴里的曲线：实线 CPU，淡线内存，最近 1 小时</div>`;
+}
+
+function stateText(p){
+  if(p.kind === 'nightcord-status'){
+    const down = (p.targets || []).filter(t => t.status === 'down').length;
+    return p.online === false ? '无法连接' : (down ? `${down} 个目标故障` : `${(p.targets || []).length} 个目标`);
+  }
+  const q = p.qingyuan;
+  if(p.kind === 'qingyuan-only') return q && q.online === false ? `离线 · ${fmtAgo(q.seen_at)}` : '';
+  const flags = [];
+  if(p.online === false) flags.push('宝塔连接失败');
+  if(q && q.online === false) flags.push(`青源离线 · ${fmtAgo(q.seen_at)}`);
+  return flags.join(' · ');
+}
+
+function machinesView(){
+  const empty = noData();
+  if(empty) return empty;
+  const th = thresholds();
+  const head = `<div class="machine-head"><span></span><span>机器</span>
+    <span class="num">CPU</span><span class="num">内存</span><span class="num">磁盘</span><span class="num">最后上报</span></div>`;
+  return `<div class="machine-list">${head}${panels().map(p => {
+    const state = stateOf(p);
+    const name = escapeHtml(p.name || '未命名面板');
+    const href = `#m=${encodeURIComponent(p.name || '')}`;
+    if(p.kind === 'nightcord-status'){
+      const text = escapeHtml(stateText(p));
+      return `<a class="machine-row" href="${href}"><span class="mark ${state || 'ok'}"></span><span class="name">${name}</span>
+        <span class="num"></span><span class="num"></span><span class="num"></span><span class="seen ${state}">${text}</span>
+        <span class="summary ${state}">${text}</span></a>`;
+    }
+    const m = machineMetrics(p);
+    const blank = noMetrics(p);
+    const offline = isOffline(p);
+    const seenAt = p.qingyuan && p.qingyuan.seen_at;
+    const cell = (v, t) => blank ? '<span class="num">-</span>' : `<span class="num ${levelOf(v, t)}">${escapeHtml(fmtPct(v))}</span>`;
+    const numbers = `CPU ${escapeHtml(fmtPct(m.cpu))} · 内存 ${escapeHtml(fmtPct(m.mem))} · 磁盘 ${escapeHtml(fmtPct(m.disk))}`;
+    const summary = blank ? escapeHtml(stateText(p)) : offline ? `${numbers} · ${escapeHtml(stateText(p))}` : numbers;
+    const seen = offline ? escapeHtml(stateText(p)) : escapeHtml(fmtAgo(seenAt));
+    return `<a class="machine-row" href="${href}"><span class="mark ${state || 'ok'}"></span><span class="name">${name}</span>
+      ${cell(m.cpu, th.cpu)}${cell(m.mem, th.mem)}${cell(m.disk, th.disk)}
+      <span class="seen ${offline ? 'warn' : ''}">${seen}</span>
+      <span class="summary ${offline ? 'warn' : ''}">${summary}</span></a>`;
+  }).join('')}</div>`;
+}
+
+function sparkline(samples){
+  const w = 300, h = 44;
+  const tsList = samples.map(s => s.ts);
+  const minTs = Math.min(...tsList), span = Math.max(Math.max(...tsList) - minTs, 1);
+  const x = t => ((t - minTs) / span) * w;
+  const y = v => h - (Math.min(100, Math.max(0, v ?? 0)) / 100) * (h - 4) - 2;
+  const line = (k, op) => `<polyline points="${samples.map(s => `${x(s.ts).toFixed(1)},${y(s[k]).toFixed(1)}`).join(' ')}"
+    fill="none" stroke="currentColor" stroke-opacity="${op}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${line('mem', 0.55)}${line('cpu', 1)}</svg>`;
+}
+
+function tile(p){
+  const href = `#m=${encodeURIComponent(p.name || '')}`;
+  const name = escapeHtml(p.name || '未命名面板');
+  if(p.kind === 'nightcord-status'){
+    const s = stateOf(p);
+    const targets = p.targets || [];
+    const down = targets.filter(t => t.status === 'down').length;
+    return `<a class="tile clickable state-${s === 'warn' ? 'warn' : s === 'caution' ? 'caution' : 'ok'}" href="${href}">
+      <div class="tile-inner"><div class="readings">
+        <div class="reading"><div class="t-value">${targets.length}</div><div class="t-label">目标</div></div>
+        <div class="reading"><div class="t-value">${down}</div><div class="t-label">故障</div></div></div>
+        <div class="tile-label"><span class="name">${name}</span></div></div></a>`;
+  }
+  const offline = noMetrics(p);
+  const s = offline ? 'offline' : (stateOf(p) || 'ok');
+  const m = machineMetrics(p);
+  const samples = tileHistory[p.name] || [];
+  const seenAt = p.qingyuan && p.qingyuan.seen_at;
+  const front = offline
+    ? `<div class="reading"><div class="t-value">离线</div><div class="t-label">最后上报 ${escapeHtml(fmtAgo(seenAt))}</div></div>`
+    : [['CPU', m.cpu], ['内存', m.mem], ['磁盘', m.disk]].map(([l, v]) =>
+        `<div class="reading"><div class="t-value">${escapeHtml(fmtPct(v))}</div><div class="t-label">${l}</div></div>`).join('');
+  return `<a class="tile clickable state-${s}" href="${href}">
+    <div class="tile-inner">
+      <div class="readings">${front}</div>
+      ${samples.length >= 2 ? sparkline(samples) : ''}
+      <div class="tile-label"><span class="name">${name}</span>${offline ? ''
+        : `<span class="seen">${escapeHtml(isOffline(p) ? stateText(p) : fmtAgo(seenAt))}</span>`}</div>
+    </div>
+  </a>`;
+}
+
+// Press feedback (PointerDownThemeAnimation): sink 3 % and tilt up to 6° away from the finger (by eye).
+document.addEventListener('pointerdown', e => {
+  const t = e.target.closest('.tile.clickable');
+  if(!t || reduceMotion.matches) return;
+  const inner = t.querySelector('.tile-inner');
+  const r = t.getBoundingClientRect();
+  const dx = (e.clientX - r.left) / r.width - 0.5;
+  const dy = (e.clientY - r.top) / r.height - 0.5;
+  t.classList.add('pressed');
+  inner.style.transform = `scale(0.97) rotateY(${(dx * 12).toFixed(2)}deg) rotateX(${(-dy * 12).toFixed(2)}deg)`;
+  const release = () => {
+    t.classList.remove('pressed'); inner.style.transform = '';
+    window.removeEventListener('pointerup', release); window.removeEventListener('pointercancel', release);
+  };
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+});
+
+// ---------- detail ----------
+function metric(label, value, level, barValue){
+  const bar = barValue === undefined || barValue === null ? '' :
+    `<div class="progress ${level}"><span style="width:${Math.min(100, Math.max(0, barValue))}%"></span></div>`;
+  return `<div class="metric"><div class="metric-label">${escapeHtml(label)}</div>
+    <div class="metric-value ${level}">${escapeHtml(value)}</div>${bar}</div>`;
 }
 
 function renderSites(sites){
   const list = (sites && sites.data) || (Array.isArray(sites) ? sites : null);
-  if(!list) return '<div class="err">无数据</div>';
-  if(!list.length) return '<div class="row"><span class="k">站点数</span><span>0</span></div>';
-  let html = `<div class="row"><span class="k">站点总数</span><span>${list.length}</span></div><table>`;
-  list.slice(0,8).forEach(s=>{
+  if(!list) return '';
+  return `<div class="group"><div class="group-header">网站（${list.length}）</div>` + list.slice(0, 8).map(s => {
     const name = s.name || s.domain || '-';
-    const status = (s.status === '1' || s.status === 1 || s.status === true) ? 'ok' : 'bad';
-    const statusText = status === 'ok' ? '运行中' : (s.status ?? '未知');
+    const ok = s.status === '1' || s.status === 1 || s.status === true;
     const edate = s.edate || s.expire || '';
-    html += `<tr><td>${escapeHtml(name)}</td><td><span class="badge ${status}">${escapeHtml(statusText)}</span></td><td>${escapeHtml(edate)}</td></tr>`;
-  });
-  html += '</table>';
-  if(list.length > 8) html += `<div class="row"><span class="k"></span><span>… 共 ${list.length} 个站点</span></div>`;
-  return html;
+    return `<div class="list-item"><span>${escapeHtml(name)}</span>
+      <span><span class="${ok ? 'caption' : 'warn'}">${ok ? '运行中' : escapeHtml(s.status ?? '未知')}</span>
+      ${edate ? `<span class="caption" style="margin-left:12px">到期 ${escapeHtml(edate)}</span>` : ''}</span></div>`;
+  }).join('') + '</div>';
 }
 
-function renderDatabases(dbs){
-  const list = (dbs && dbs.data) || (Array.isArray(dbs) ? dbs : null);
-  if(!list) return '<div class="err">无数据</div>';
-  return `<div class="row"><span class="k">数据库总数</span><span>${list.length}</span></div>`;
+function overviewItem(p){
+  const th = thresholds(), m = machineMetrics(p), q = p.qingyuan;
+  let html = '';
+  if(isOffline(p)) html += `<div class="notice">${escapeHtml(p.error || (q && q.error) || '无法连接')}</div>`;
+  html += '<div class="group"><div class="group-header">系统状态</div><div class="fields">';
+  html += metric('状态', isOffline(p) ? '离线' : '在线', isOffline(p) ? 'warn' : '');
+  if(q && q.seen_at) html += metric('最后上报', new Date(q.seen_at*1000).toLocaleString(), '');
+  html += metric('CPU', fmtPct(m.cpu), levelOf(m.cpu, th.cpu), m.cpu);
+  html += metric('内存', m.memText ? `${fmtPct(m.mem)}（${m.memText}）` : fmtPct(m.mem), levelOf(m.mem, th.mem), m.mem);
+  const sys = p.system, net = p.network;
+  if(sys && sys.system) html += metric('系统', sys.system, '');
+  if(sys && sys.time) html += metric('运行时长', sys.time, '');
+  if(net && net.load) html += metric('负载 (1/5/15)', `${net.load.one} / ${net.load.five} / ${net.load.fifteen}`, '');
+  if(net && (net.up !== undefined || net.down !== undefined)){
+    html += metric('网络 ↑ / ↓', `${fmtBytes(net.up*1024)}/s ↑  ${fmtBytes(net.down*1024)}/s ↓`, '');
+  }
+  html += '</div></div>';
+  const ext = (q && q.ip_external) || p.ip_external;
+  const int_ = q && q.ip_internal;
+  if(ext || int_ || p.url){
+    html += '<div class="group"><div class="group-header">网络</div><div class="fields">';
+    if(ext) html += metric('外网 IP', ext, '');
+    if(int_) html += metric('内网 IP', int_, '');
+    if(p.url) html += `<div class="metric"><div class="metric-label">面板地址</div><div>${escapeHtml(p.url || '')}</div></div>`;
+    html += '</div></div>';
+  }
+  html += renderSites(p.sites);
+  const dbs = p.databases && (p.databases.data || (Array.isArray(p.databases) ? p.databases : null));
+  if(dbs) html += `<div class="group">${metric('数据库', String(dbs.length), '')}</div>`;
+  return html + rawData(p);
 }
 
-const METRICS_RANGE_OPTIONS = [
-  {label:'1 小时', hours:1},
-  {label:'6 小时', hours:6},
-  {label:'24 小时', hours:24},
-  {label:'7 天', hours:168},
-];
-const metricsRangeState = {};
-
-function metricsSlug(panelName){
-  return (panelName || '').replace(/[^a-zA-Z0-9_-]/g, c => '_' + c.charCodeAt(0) + '_');
+function diskItem(p){
+  const th = thresholds(), list = machineMetrics(p).disks;
+  if(!list.length) return '<div class="empty-hint">没有磁盘数据</div>';
+  return '<div class="group fields">' + list.map(r => {
+    const level = levelOf(r.percent, th.disk);
+    return `<div class="metric">
+      <div class="metric-row"><span style="font:var(--type-base)">${escapeHtml(r.path)}</span>
+        <span class="${level}">${escapeHtml(fmtPct(r.percent))}</span></div>
+      <div class="metric-label">${escapeHtml(r.usedTotal)}</div>
+      <div class="progress ${level}"><span style="width:${Math.min(100, r.percent)}%"></span></div>
+    </div>`;
+  }).join('') + '</div>';
 }
 
-function metricsSvg(samples){
-  const w = 300, h = 56;
-  const series = [
-    {k:'cpu', color:'var(--ok)'},
-    {k:'mem', color:'var(--accent)'},
-    {k:'disk', color:'var(--warn)'},
-  ];
-  const tsList = samples.map(s=>s.ts);
-  const minTs = Math.min(...tsList), maxTs = Math.max(...tsList);
-  const span = Math.max(maxTs - minTs, 1);
-  const x = t => ((t - minTs) / span) * w;
-  const y = v => h - (Math.min(100, Math.max(0, v ?? 0)) / 100) * h;
-  const lines = series.map(({k,color}) => {
-    const pts = samples.map(s => `${x(s.ts).toFixed(1)},${y(s[k]).toFixed(1)}`).join(' ');
-    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
-  }).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none"
-    style="background:#0c0e13;border-radius:6px;display:block">${lines}</svg>`;
-}
-
-function metricsLegend(last){
-  const items = [
-    {label:'CPU', color:'var(--ok)', v:last.cpu},
-    {label:'内存', color:'var(--accent)', v:last.mem},
-    {label:'磁盘', color:'var(--warn)', v:last.disk},
-  ];
-  return `<div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:4px">
-    ${items.map(i=>`<span><span class="dot" style="width:7px;height:7px;background:${i.color}"></span>
-      ${i.label} ${i.v!==undefined && i.v!==null ? Number(i.v).toFixed(1)+'%' : '-'}</span>`).join('')}
-  </div>`;
-}
-
-function metricsRangeSelect(panelName){
+function historyItem(p){
+  const panelName = p.name || '';
   const current = metricsRangeState[panelName] ?? 6;
-  const opts = METRICS_RANGE_OPTIONS.map(o=>
-    `<option value="${o.hours}" ${o.hours===current?'selected':''}>${o.label}</option>`).join('');
-  return `<select class="metrics-range" data-panel="${escapeAttr(panelName)}"
-    style="font-size:11px;background:#0c0e13;color:var(--text);border:1px solid var(--border);border-radius:4px">
-    ${opts}
-  </select>`;
+  const radios = METRICS_RANGE_OPTIONS.map(o => `<label class="radio">
+      <input type="radio" name="range" value="${o.hours}" data-panel="${escapeAttr(panelName)}" ${o.hours === current ? 'checked' : ''}>
+      ${o.label}</label>`).join('');
+  return `<div class="radios">${radios}</div><div class="chart" id="chart"><div class="empty-hint">加载中…</div></div>`;
 }
 
-async function loadMetricsHistory(panelName){
-  const el = document.getElementById('mtx-' + metricsSlug(panelName));
+function statusOverview(p){
+  const labelMap = {ok:'正常', degraded:'轻微异常', down:'故障', unknown:'未知'};
+  const levelMap = {ok:'', degraded:'caution', down:'warn', unknown:'caution'};
+  const targets = p.targets || [];
+  let html = '';
+  if(p.online === false) html += `<div class="notice">${escapeHtml(p.error || '无法连接')}</div>`;
+  else if(!targets.length) html += '<div class="empty-hint">没有监控目标</div>';
+  else html += '<div class="group">' + targets.map(t => {
+    const level = levelMap[t.status] ?? 'caution';
+    return `<div class="list-item"><span>${escapeHtml(t.display_name || t.id)}</span>
+      <span class="${level || 'caption'}">${escapeHtml(labelMap[t.status] || t.status)}</span></div>`;
+  }).join('') + '</div>';
+  if(p.url) html += `<div class="group"><div class="metric"><div class="metric-label">来源地址</div><div>${escapeHtml(p.url || '')}</div></div></div>`;
+  return html + rawData(p);
+}
+
+function rawData(p){
+  return `<div class="group"><button class="text-command" data-toggle-raw>查看原始数据</button>
+    <pre class="raw" hidden>${escapeHtml(JSON.stringify(p, null, 2))}</pre></div>`;
+}
+
+function detailPivots(p){
+  if(p.kind === 'nightcord-status') return [{label:'概览', render:statusOverview}];
+  return [{label:'概览', render:overviewItem}, {label:'磁盘', render:diskItem}, {label:'历史', render:historyItem}];
+}
+
+// Only the latest chart request may draw: switching range or refreshing cancels the previous one,
+// and every request gives up after 10 s (by eye) so a stuck one cannot pile up.
+let chartRequest = null;
+async function loadChart(panelName){
+  const el = document.getElementById('chart');
   if(!el) return;
   const hours = metricsRangeState[panelName] ?? 6;
+  if(chartRequest) chartRequest.abort();
+  const request = chartRequest = new AbortController();
   try{
-    const res = await fetch(`/api/metrics/history?panel=${encodeURIComponent(panelName)}&hours=${hours}`);
-    if(!res.ok){ el.innerHTML = ''; return; }
-    const data = await res.json();
-    const samples = data.samples || [];
-    if(samples.length < 2){ el.innerHTML = ''; return; }
+    const r = await fetchJsonWithTimeout(`/api/metrics/history?panel=${encodeURIComponent(panelName)}&hours=${hours}`, 10000, request);
+    const samples = r.ok ? (r.data.samples || []) : [];
+    if(request !== chartRequest || document.getElementById('chart') !== el) return;
+    if(samples.length < 2){ el.innerHTML = '<div class="empty-hint">这段时间没有足够的数据</div>'; return; }
+    const w = 800, h = 200;
+    const tsList = samples.map(s => s.ts);
+    const minTs = Math.min(...tsList), span = Math.max(Math.max(...tsList) - minTs, 1);
+    const x = t => ((t - minTs) / span) * w;
+    const y = v => h - (Math.min(100, Math.max(0, v ?? 0)) / 100) * (h - 4) - 2;
+    // CPU in BaseHigh, memory in the accent, disk in BaseMedium: no semantic colours.
+    const series = [
+      {k:'cpu', label:'CPU', color:'var(--SystemBaseHigh)'},
+      {k:'mem', label:'内存', color:'var(--SystemAccent)'},
+      {k:'disk', label:'磁盘', color:'var(--SystemBaseMedium)'},
+    ];
+    const grid = [0, 50, 100].map(v => `<line x1="0" x2="${w}" y1="${y(v)}" y2="${y(v)}" stroke="var(--SystemBaseLow)" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('');
+    const lines = series.map(s => `<polyline points="${samples.map(d => `${x(d.ts).toFixed(1)},${y(d[s.k]).toFixed(1)}`).join(' ')}"
+      fill="none" stroke="${s.color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`).join('');
     const last = samples[samples.length - 1];
-    el.innerHTML = `<div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
-        <span>历史趋势</span>${metricsRangeSelect(panelName)}
-      </div>
-      ${metricsSvg(samples)}
-      ${metricsLegend(last)}`;
+    el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${grid}${lines}</svg>
+      <div class="legend">${series.map(s => `<span><i style="background:${s.color}"></i>${s.label} ${escapeHtml(fmtPct(last[s.k]))}</span>`).join('')}
+      <span class="caption">网格线 0 / 50 / 100%</span></div>`;
   }catch(e){
-    el.innerHTML = '';
+    if(request !== chartRequest || document.getElementById('chart') !== el) return;  // superseded
+    el.innerHTML = '<div class="empty-hint">加载失败</div>';
   }
 }
 
-function onMetricsRangeChange(panelName, hours){
-  metricsRangeState[panelName] = Number(hours);
-  loadMetricsHistory(panelName);
-}
-
-function renderNightcordStatus(p){
-  const targets = p.targets || [];
-  if(!targets.length) return '<div class="err">无监控数据</div>';
-  const labelMap = {ok:'正常', degraded:'轻微异常', down:'故障', unknown:'未知'};
-  const badgeMap = {ok:'ok', degraded:'warn', down:'bad', unknown:'warn'};
-  let html = '<table>';
-  targets.forEach(t=>{
-    const label = labelMap[t.status] || t.status;
-    const badge = badgeMap[t.status] || 'warn';
-    html += `<tr><td>${escapeHtml(t.display_name||t.id)}</td><td><span class="badge ${badge}">${escapeHtml(label)}</span></td></tr>`;
+// ---------- events ----------
+document.getElementById('pivotHeaders').addEventListener('click', e => {
+  const top = e.target.closest('[data-pivot]');
+  if(top){ location.hash = '#p=' + top.dataset.pivot; return; }
+  const sub = e.target.closest('[data-detail-pivot]');
+  if(sub){ detailPivot = Number(sub.dataset.detailPivot); render(true); }
+});
+document.getElementById('content').addEventListener('click', e => {
+  const t = e.target.closest('[data-toggle-raw]');
+  if(t){ const pre = t.nextElementSibling; pre.hidden = !pre.hidden; }
+});
+document.getElementById('content').addEventListener('change', e => {
+  if(e.target.name === 'range'){
+    metricsRangeState[e.target.dataset.panel] = Number(e.target.value);
+    loadChart(e.target.dataset.panel);
+  }
+});
+let cameFromList = false;
+document.getElementById('back').addEventListener('click', () => {
+  if(cameFromList) history.back(); else location.hash = '#p=1';
+});
+window.addEventListener('hashchange', () => {
+  if(route().view === 'detail'){ detailPivot = 0; cameFromList = true; }
+  render(true);
+});
+// Swipe between pivot items (touch / pen only).
+(() => {
+  let sx = null, sy = null;
+  const c = document.getElementById('content');
+  c.addEventListener('pointerdown', e => { if(e.pointerType !== 'mouse'){ sx = e.clientX; sy = e.clientY; } });
+  c.addEventListener('pointerup', e => {
+    if(sx === null) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+    if(Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    const step = dx < 0 ? 1 : -1, r = route();
+    if(r.view === 'detail'){
+      const p = panels().find(x => x.name === r.name);
+      if(!p) return;
+      const n = detailPivots(p).length;
+      detailPivot = (detailPivot + step + n) % n; render(true);
+    } else if(r.pivot + step === TOP_PIVOTS.length){
+      location.href = '/settings';
+    } else if(r.pivot + step >= 0){
+      location.hash = '#p=' + (r.pivot + step);
+    }
   });
-  html += '</table>';
-  return html;
-}
+})();
 
-// 25時、ナイトコードで。四人按面板顺序循环分配强调色，纯装饰用，无实际含义
-const NIGHTCORD_MEMBERS = [
-  {name: '奏', color: 'var(--kanade)'},
-  {name: 'まふゆ', color: 'var(--mafuyu)'},
-  {name: '絵名', color: 'var(--ena)'},
-  {name: '瑞希', color: 'var(--mizuki)'},
-];
-
-function renderCard(p, idx){
-  const online = p.online !== false && !(p.qingyuan && p.qingyuan.online === false);
-  const dot = online ? 'ok' : 'bad';
-  const member = NIGHTCORD_MEMBERS[idx % NIGHTCORD_MEMBERS.length];
-  // 挂在宝塔卡片上的青源数据如果已经停报，就别再当实时数据显示，单独标出 agent 离线
-  const qingyuanStale = p.kind !== 'qingyuan-only' && p.qingyuan && p.qingyuan.online === false;
-  const qingyuan = qingyuanStale ? null : p.qingyuan;
-  // 老版本青源 agent 只报单个百分比、没有 disk_detail 数组，兜底拼成一行，
-  // 用户不用先升级 agent 就不至于突然从"有磁盘数据"变成"无数据"
-  const qyDiskDetail = (qingyuan && qingyuan.disk_detail && qingyuan.disk_detail.length)
-    ? qingyuan.disk_detail
-    : (qingyuan && qingyuan.disk !== undefined && qingyuan.disk !== null
-        ? [{path: '/', total: null, used: null, percent: qingyuan.disk}]
-        : null);
-  let body = '';
-  if(p.online === false){
-    // 只看卡片自己的连接状态；宝塔连得上、只是挂在上面的青源停报时，由下面的 qingyuanStale 单独提示
-    body += `<div class="err">${escapeHtml(p.error || (p.kind === 'qingyuan-only' ? '青源 agent 已超过 3 分钟没有上报' : '无法连接该面板'))}</div>`;
-  }
-  if(qingyuanStale){
-    body += `<div class="err">${escapeHtml(p.qingyuan.error || '青源 agent 已超过 3 分钟没有上报')}</div>`;
-  }
-  if(p.kind === 'nightcord-status'){
-    body += `<div class="section-title">监控目标</div>${renderNightcordStatus(p)}`;
-  } else if(p.kind === 'qingyuan-only'){
-    // 只装了青源、没配对应宝塔面板的机器：没有 sites/databases 这些宝塔才有的数据，卡片简化展示
-    body += `<div class="section-title">系统状态</div>${renderSystem(null, null, qingyuan)}`;
-    body += renderIp(p, qingyuan);
-    body += `<div class="section-title">磁盘</div>${renderDisk(null, qyDiskDetail)}`;
-    body += `<div id="mtx-${metricsSlug(p.name || '')}"></div>`;
-  } else {
-    body += `<div class="section-title">系统状态</div>${renderSystem(p.system, p.network, qingyuan)}`;
-    body += renderIp(p, qingyuan);
-    body += `<div class="section-title">磁盘</div>${renderDisk(p.disk, qyDiskDetail)}`;
-    body += `<div class="section-title">网站</div>${renderSites(p.sites)}`;
-    body += `<div class="section-title">数据库</div>${renderDatabases(p.databases)}`;
-    body += `<div id="mtx-${metricsSlug(p.name || '')}"></div>`;
-  }
-  body += `<details><summary>查看原始数据</summary><pre>${escapeHtml(JSON.stringify(p, null, 2))}</pre></details>`;
-  return `<div class="card" style="--accent-color:${member.color}">
-    <h2><span class="dot ${dot}"></span>${escapeHtml(p.name || '未命名面板')}
-      <span style="margin-left:auto;font-size:10px;color:${member.color};font-weight:400">♪ ${member.name}</span>
-    </h2>
-    <div class="url">${escapeHtml(p.url || (p.kind === 'qingyuan-only' ? '仅青源 agent，未配置宝塔面板' : ''))}</div>
-    ${body}
-  </div>`;
-}
-
-function escapeHtml(s){
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-function escapeAttr(s){
-  return escapeHtml(s);
-}
-
-async function logout(){
-  await fetch('/logout', {method: 'POST'});
-  location.href = '/login';
-}
-
-async function refresh(){
+// ---------- data ----------
+// Each refresh is a batch; a batch only lands in the shared cache if no newer batch has started,
+// so a slow old batch can never overwrite newer curves. Requests give up after 10 s (by eye).
+let tileBatch = 0;
+// The timeout covers reading the body too: a response whose headers arrive but whose body never
+// finishes is aborted as well. Resolves to {ok, status, data}.
+async function fetchJsonWithTimeout(url, ms, controller){
+  controller = controller || new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
   try{
-    const res = await fetch('/api/status');
+    const res = await fetch(url, {signal:controller.signal});
     const data = await res.json();
-    const grid = document.getElementById('grid');
-    const empty = document.getElementById('empty');
-    if(data.error){
-      grid.innerHTML = '';
-      empty.style.display = 'block';
-      empty.innerHTML = `${escapeHtml(data.error)}<br><br>去 <a href="/settings" style="color:var(--accent)">设置页面</a> 配置一下吧。`;
-      return;
-    }
-    const panels = data.panels || [];
-    if(!panels.length){
-      grid.innerHTML = '';
-      empty.style.display = 'block';
-      return;
-    }
-    empty.style.display = 'none';
-    grid.innerHTML = panels.map((p, i) => renderCard(p, i)).join('');
-    grid.querySelectorAll('.metrics-range').forEach(select => {
-      select.addEventListener('change', () => onMetricsRangeChange(select.dataset.panel, select.value));
-    });
-    panels.forEach(p => {
-      if(p.kind !== 'nightcord-status' && p.name) loadMetricsHistory(p.name);
-    });
-    document.getElementById('updated').textContent =
-      '最后更新: ' + new Date((data.ts||Date.now()/1000)*1000).toLocaleTimeString() + (data.cached ? '（缓存）' : '');
-  }catch(e){
-    document.getElementById('updated').textContent = '刷新失败: ' + e;
+    return {ok:res.ok, status:res.status, data};
+  }finally{
+    clearTimeout(timer);
   }
 }
+async function loadTileHistory(){
+  const batch = ++tileBatch;
+  const machines = panels().filter(p => p.kind !== 'nightcord-status' && p.name);
+  const results = {};
+  await Promise.all(machines.map(async p => {
+    try{
+      const r = await fetchJsonWithTimeout(`/api/metrics/history?panel=${encodeURIComponent(p.name)}&hours=1`, 10000);
+      results[p.name] = r.ok ? (r.data.samples || []) : [];
+    }catch(e){ results[p.name] = []; }
+  }));
+  if(batch !== tileBatch) return false;
+  tileHistory = results;
+  return true;
+}
 
-refresh();
-setInterval(refresh, REFRESH_MS);
+// Only the latest /api/status answer is applied: an older one arriving late is dropped, so the
+// dashboard never rolls back to stale numbers.
+let statusSeq = 0;
+async function refresh(animate){
+  const seq = ++statusSeq;
+  let data;
+  try{
+    data = (await fetchJsonWithTimeout('/api/status', 10000)).data;
+  }catch(e){
+    if(seq === statusSeq){ refreshFailed = true; renderStatusBar(); }
+    return;
+  }
+  if(seq !== statusSeq) return;
+  refreshFailed = false;
+  lastData = data;
+  const r = route();
+  // An open history item keeps its range buttons; only the chart data is reloaded.
+  const p = r.view === 'detail' ? panels().find(x => x.name === r.name) : null;
+  if(!animate && p && detailPivots(p)[detailPivot].render === historyItem){
+    renderStatusBar();
+    loadChart(p.name);
+  } else {
+    render(animate);
+  }
+  // Tile charts arrive afterwards: a slow history request must not hold up the dashboard.
+  if(!lastData.error){
+    const landed = await loadTileHistory();
+    if(seq !== statusSeq) return;
+    const now = route();
+    if(landed && now.view === 'list' && now.pivot === 0) render(false);
+  }
+}
+document.getElementById('refresh').addEventListener('click', () => refresh(false));
+document.getElementById('logout').addEventListener('click', async () => {
+  await fetch('/logout', {method:'POST'});
+  location.href = '/login';
+});
+
+render(false);
+refresh(true);
+setInterval(() => refresh(false), REFRESH_MS);
 </script>
 </body>
 </html>

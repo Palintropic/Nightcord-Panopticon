@@ -6,6 +6,7 @@
     python app.py
 然后浏览器打开 http://127.0.0.1:1810
 """
+import copy
 import hmac
 import json
 import os
@@ -42,8 +43,15 @@ _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实�
 # 不需要登录就能访问的路由：登录页本身，以及登录相关的两个 API（否则没法登录）
 PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify"}
 
-# 简单内存缓存，避免每次刷新都重新请求所有面板
-_cache = {"data": None, "ts": 0}
+# 远程数据源（宝塔面板、Nightcord-Status）的采集结果缓存。远程采集可能很慢（宝塔接口串行，
+# 一台没响应就要几十秒），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
+# （同一时间只跑一个）。ts 记的是采集完成的时间。青源数据每次请求都从数据库现读，始终最新。
+# fp：采集开始时那两段配置的指纹。读缓存时跟当前配置比，对不上就当作没有缓存——指纹来自
+#     配置文件本身，所以别的进程（Gunicorn 多 worker）改了配置也能认出来。
+# seq：每次采集开始领一个递增序号，只有比已入缓存的更新的采集才能写入，先开始后结束的旧采集
+#      （比如巡检和看板触发的刷新同时在跑）不会覆盖新结果。
+_remote = {"data": None, "ts": 0, "fp": None, "refreshing": False, "seq": 0, "stored_seq": 0}
+_remote_lock = threading.Lock()
 CACHE_TTL = 10  # 秒
 
 # 常驻一个 Notifier 实例，不要在 background_alert_loop 每轮里 new 一个新的——
@@ -301,7 +309,80 @@ def webauthn_login_verify():
 
 
 def fetch_all():
-    panels = load_panels()
+    """采集远程数据源（顺便更新缓存）并叠加青源数据。后台巡检用；看板请求走 api_status 的非阻塞路径。"""
+    ticket = _begin_remote_fetch()
+    remote = fetch_remote(ticket["cfg"])
+    _store_remote(remote, ticket)
+    return _with_qingyuan(remote)
+
+
+def _with_qingyuan(remote):
+    results = copy.deepcopy(remote)  # _merge_qingyuan 会往卡片上挂数据，不能改到缓存本身
+    _merge_qingyuan(results)
+    return results
+
+
+def _remote_fingerprint(cfg=None):
+    """决定远程采集结果的那两段配置（宝塔面板列表、Nightcord-Status）的指纹。"""
+    if cfg is None:
+        try:
+            cfg = load_config()
+        except RuntimeError:
+            cfg = {}
+    return json.dumps([cfg.get("panels") or [], cfg.get("nightcord_status") or {}], sort_keys=True, ensure_ascii=False)
+
+
+def _begin_remote_fetch():
+    """采集开始时调用：读一次配置快照，指纹和接下来的采集都只用这一份（见 fetch_remote 的 cfg 参数），
+    并领一个序号。配置若在采集中途改了，这份结果的指纹就是旧的，读的时候会被当作过期。"""
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
+    with _remote_lock:
+        _remote["seq"] += 1
+        return {"seq": _remote["seq"], "fp": _remote_fingerprint(cfg), "cfg": cfg}
+
+
+def _store_remote(data, ticket):
+    with _remote_lock:
+        if ticket["seq"] < _remote["stored_seq"]:
+            return  # 有更晚开始的采集已经写进来了，这份更旧
+        _remote["stored_seq"] = ticket["seq"]
+        _remote["data"] = data
+        _remote["ts"] = time.time()
+        _remote["fp"] = ticket["fp"]
+
+
+def _invalidate_remote():
+    """同进程里刚保存过配置：马上丢掉缓存。跨进程靠读缓存时的指纹比对。"""
+    with _remote_lock:
+        _remote["data"] = None
+
+
+def _refresh_remote_async():
+    """后台刷新远程缓存；已经有一个在跑就什么都不做。"""
+    with _remote_lock:
+        if _remote["refreshing"]:
+            return
+        _remote["refreshing"] = True
+
+    def run():
+        try:
+            ticket = _begin_remote_fetch()
+            _store_remote(fetch_remote(ticket["cfg"]), ticket)
+        except Exception as e:
+            print(f"[remote refresh] 出错: {e}")
+        finally:
+            with _remote_lock:
+                _remote["refreshing"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def fetch_remote(cfg):
+    """宝塔面板 + Nightcord-Status 的原始采集结果（不含青源数据），只按传进来的配置快照采集。"""
+    panels = cfg.get("panels") or []
     results = []
     with ThreadPoolExecutor(max_workers=max(1, len(panels))) as pool:
         futures = {
@@ -320,7 +401,7 @@ def fetch_all():
     order = {p["name"]: i for i, p in enumerate(panels)}
     results.sort(key=lambda r: order.get(r.get("name"), 999))
 
-    ns_cfg = load_config().get("nightcord_status", {})
+    ns_cfg = cfg.get("nightcord_status") or {}
     if ns_cfg.get("enabled"):
         try:
             ns_result = NightcordStatusClient(
@@ -332,8 +413,6 @@ def fetch_all():
             ns_result = {"name": ns_cfg.get("name", "Nightcord-Status"), "url": ns_cfg.get("url"),
                          "online": False, "error": str(e), "kind": "nightcord-status", "targets": []}
         results.append(ns_result)
-
-    _merge_qingyuan(results)
     return results
 
 
@@ -423,18 +502,41 @@ def _merge_qingyuan(results):
             })
 
 
+def _thresholds():
+    """前端磁贴变红用的阈值，跟告警巡检读同一份配置，看板上的红色和收到的告警永远一致。"""
+    try:
+        th = (load_config().get("notifications") or {}).get("thresholds") or {}
+    except RuntimeError:
+        th = {}  # 配置文件缺失：状态接口照常返回（缓存数据 + 默认阈值），不因为阈值变成 500
+    return {"cpu": th.get("cpu", 90), "mem": th.get("mem", 90), "disk": th.get("disk", 85)}
+
+
 @app.route("/api/status")
 def api_status():
-    now = time.time()
-    if _cache["data"] is not None and now - _cache["ts"] < CACHE_TTL:
-        return jsonify({"panels": _cache["data"], "cached": True, "ts": _cache["ts"]})
+    """
+    永远立刻返回：远程数据源用缓存（过期就后台刷新），青源数据现读。第一次还没有远程缓存时，
+    先只返回青源机器，remote_pending=True，远程部分下一次刷新就有了。
+    """
     try:
-        data = fetch_all()
+        cfg = load_config()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
-    _cache["data"] = data
-    _cache["ts"] = now
-    return jsonify({"panels": data, "cached": False, "ts": now})
+    has_remote = bool(cfg.get("panels")) or bool((cfg.get("nightcord_status") or {}).get("enabled"))
+    now = time.time()
+    with _remote_lock:
+        remote, remote_ts, remote_fp = _remote["data"], _remote["ts"], _remote["fp"]
+    if remote is not None and remote_fp != _remote_fingerprint(cfg):
+        remote = None  # 缓存是按改之前的配置采的（可能是别的进程改的配置）
+    if remote is None or now - remote_ts >= CACHE_TTL:
+        _refresh_remote_async()
+    return jsonify({
+        "panels": _with_qingyuan(remote or []),
+        "ts": now,
+        # 远程数据源（宝塔 / Nightcord-Status）那部分的采集完成时间；前端据此提示数据是否陈旧
+        "remote_ts": remote_ts if remote is not None and has_remote else None,
+        "remote_pending": remote is None and has_remote,
+        "thresholds": _thresholds(),
+    })
 
 
 @app.route(METRICS_REPORT_PATH, methods=["POST"])
@@ -543,8 +645,7 @@ def api_agent_retire(name):
         return jsonify({"error": "没有这台机器"}), 404
     # 不在这里清告警的内存状态：移除让监控代次 +1，旧告警在下一次发送 / 恢复检查时按代次静默作废。
     # 在这里按机器名清，可能误删移除之后才发出的新一代告警（见 Notifier.notify 的代次说明）
-    _cache["data"] = None  # 看板下次刷新就不再显示这张卡
-    return jsonify({"ok": True})
+    return jsonify({"ok": True})  # 青源数据每次现读，看板下次刷新就不再显示这张卡
 
 
 @app.route("/")
@@ -587,7 +688,7 @@ def api_save_config():
     errors = update_config(merge_and_save)
     if errors:
         return jsonify({"errors": errors}), 400
-    _cache["data"] = None  # 配置变了，强制下次 /api/status 重新拉取而不是用旧缓存
+    _invalidate_remote()  # 配置变了（面板增删、地址改了），远程缓存作废，下次 /api/status 后台重新采集
     return jsonify({"ok": True})
 
 
@@ -647,7 +748,7 @@ def _deploy_and_report(ip, port, ssh_user, password, remember, panel_name_overri
         # 这个猜测在通过 SSH 隧道／127.0.0.1 访问设置页、但部署目标是别的机器时是错的：
         # agent 会拿到一个只在"本机自己"才有意义的地址，上报永远静默失败，dashboard 上永远不会出现这张卡片。
         report_url = f"{request.scheme}://{request.host}{METRICS_REPORT_PATH}"
-    shared_secret = cfg["metrics_agent"]["shared_secret"]
+    shared_secret = ma_cfg["shared_secret"]
 
     q = queue.Queue()
     result = {}
@@ -692,7 +793,6 @@ def _deploy_and_report(ip, port, ssh_user, password, remember, panel_name_overri
             if result.get("ok"):
                 if remember:
                     agent_hosts.save_host(CONFIG_PATH, ip, port, ssh_user, password, result["panel_name"])
-                _cache["data"] = None  # 新 agent 上线后下一次 /api/status 应该重新拉取一次
                 yield json.dumps(
                     {"type": "done", "ok": True, "panel_name": result["panel_name"]}, ensure_ascii=False
                 ) + "\n"
@@ -776,9 +876,7 @@ def background_alert_loop():
     while True:
         try:
             cfg = load_config()
-            data = fetch_all()
-            _cache["data"] = data
-            _cache["ts"] = time.time()
+            data = fetch_all()  # 也会刷新远程缓存
 
             notif_cfg = cfg.get("notifications", {})
             thresholds = notif_cfg.get("thresholds", {})

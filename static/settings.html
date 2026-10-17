@@ -2,217 +2,237 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>设置 · 25時、ナイトコードで。 Panopticon</title>
+<title>设置 · Panopticon</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/uwp.css">
 <style>
-  :root{
-    --bg:#0f1115; --card:#171a21; --border:#262b36; --text:#e6e8ee;
-    --muted:#8a90a2; --ok:#3ecf8e; --warn:#f5a623; --bad:#f0506e; --accent:#5b8cff;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-       background:var(--bg);color:var(--text)}
-  header{padding:20px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-  header h1{font-size:18px;margin:0;font-weight:600}
-  header a{color:var(--muted);font-size:12px;text-decoration:none}
-  header a:hover{color:var(--text)}
-  main{max-width:760px;margin:0 auto;padding:24px 20px 80px}
-  .banner{background:rgba(91,140,255,.12);border:1px solid rgba(91,140,255,.35);color:var(--text);
-          border-radius:10px;padding:14px 16px;font-size:13px;margin-bottom:20px;line-height:1.6}
-  section{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:18px}
-  section h2{font-size:14px;margin:0 0 4px;font-weight:600}
-  section .desc{color:var(--muted);font-size:12px;margin-bottom:14px}
-  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
-  input[type=text],input[type=password],input[type=number]{
-    width:100%;background:#0c0e13;border:1px solid var(--border);border-radius:8px;color:var(--text);
-    padding:8px 10px;font-size:13px;
-  }
-  input[type=checkbox]{margin-right:6px;vertical-align:middle}
-  .checkbox-row{display:flex;align-items:center;font-size:13px;margin:10px 0}
-  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  .row3{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end}
-  .panel-card{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px;position:relative}
-  .panel-card .remove{position:absolute;top:10px;right:10px;background:none;border:none;color:var(--bad);
-                       cursor:pointer;font-size:12px}
-  button{cursor:pointer;border-radius:8px;border:1px solid var(--border);background:#1d212b;color:var(--text);
-         padding:8px 14px;font-size:13px}
-  button:hover{border-color:var(--accent)}
-  button.primary{background:var(--accent);border-color:var(--accent);color:#0c0e13;font-weight:600}
-  button.add{width:100%;margin-top:4px}
-  .actions{position:sticky;bottom:0;background:linear-gradient(0deg,var(--bg) 60%,transparent);
-           padding:20px 0 8px;display:flex;gap:10px;align-items:center}
-  #msg{font-size:13px}
-  #msg.ok{color:var(--ok)} #msg.err{color:var(--bad)}
-  #feishuTestMsg.ok{color:var(--ok)} #feishuTestMsg.err{color:var(--bad)}
-  .hint{color:var(--muted);font-size:11px;margin-top:4px}
-  footer{padding:24px 28px;text-align:center;color:var(--muted);font-size:11px}
+  /* Settings-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
+  .page{max-width:760px}   /* by eye: same measure as the form grid */
+  .page[hidden]{display:none}
+  .panel-card{padding:12px 0;border-bottom:1px solid var(--SystemBaseLow)}
+  .panel-card:last-child{border-bottom:0}
+  .card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--gutter);margin-bottom:var(--header-gap)}
+  /* Settings deliberately keep a Save command for fields you type into (secrets, addresses):
+     a deviation from the Windows 10 Settings app, where every change applies at once. */
+  .save-row{display:flex;align-items:center;gap:var(--gutter);margin-top:var(--group-gap)}
+  .save-msg.ok{color:var(--ok)} .save-msg.err{color:var(--warn)}
+  #feishuTestMsg.ok{color:var(--ok)} #feishuTestMsg.err{color:var(--warn)}
+  #deployMsg.ok{color:var(--ok)} #deployMsg.err{color:var(--warn)}
+  .inline{display:flex;align-items:center;gap:var(--gutter);flex-wrap:wrap}
 </style>
 </head>
 <body>
-<header>
-  <h1>⚙ 设置</h1>
-  <a href="/">← 返回 Dashboard</a>
-</header>
-<main>
-  <div class="banner" id="oobeBanner" style="display:none">
-    还没检测到任何面板配置——这里就是首次配置向导。填完至少一台面板和登录密码后保存，
-    之后这个页面会一直在 <code>/settings</code>，随时可以回来改。
-    <br><br>
-    <strong>如果 Dashboard 打算公网暴露，请在开放公网访问之前先完成这里的配置</strong>
-    （尤其是登录密码），否则配置窗口对任何能访问到这个地址的人都是开放的。
-  </div>
-
-  <section>
-    <h2>面板列表</h2>
-    <div class="desc">每台宝塔面板的地址、API 密钥。地址建议填 WireGuard 内网地址（如 <code>http://10.10.0.2:18101</code>）。</div>
-    <div id="panels"></div>
-    <button class="add" onclick="addPanelRow()">+ 添加面板</button>
-  </section>
-
-  <section>
-    <h2>一键部署 agent（青源）</h2>
-    <div class="desc">
-      填目标服务器的 SSH 信息，自动 SSH 上去装好青源 agent（系统指标监控）并注册成 systemd 常驻服务，
-      不用再手动 SSH 上去改 yaml。密码只在这次安装过程里用一次；勾选"记住密码"才会加密后保存，方便以后一键重装。
+<div class="shell">
+  <header class="pivot">
+    <div class="pivot-title">
+      <a class="back" href="/" aria-label="返回看板">‹</a>
+      <span>设置</span>
     </div>
-    <div class="row3" style="grid-template-columns:2fr 1fr">
-      <div><label>服务器 IP</label><input type="text" id="deployIp" placeholder="10.10.0.5"></div>
-      <div><label>端口</label><input type="number" id="deployPort" value="22"></div>
-    </div>
-    <div class="row2">
-      <div><label>SSH 账号</label><input type="text" id="deployUser" value="root"></div>
-      <div><label>密码</label><input type="password" id="deployPassword" placeholder="SSH 登录密码，验证方式：密码"></div>
-    </div>
-    <label>这台机器是不是同时也是上面配置的某个宝塔面板？</label>
-    <select id="deployBindPanel">
-      <option value="">不绑定（用远端 hostname 当卡片名字）</option>
-    </select>
-    <div class="hint">选了的话青源上报会强制用那个面板的名字，两边数据合并显示在同一张卡片上；
-      不选、又跟某个面板同名或同 IP，dashboard 也会尽量自动合并，但不保证百分百对得上。</div>
-    <div class="checkbox-row"><input type="checkbox" id="deployRemember"> 记住这台服务器的密码（加密保存，方便以后一键重装）</div>
-    <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
-      <button class="primary" onclick="deployAgent()">一键安装</button>
-      <span id="deployMsg"></span>
-    </div>
-    <pre id="deployLog" style="display:none;background:#0c0e13;border:1px solid var(--border);border-radius:8px;
-         padding:10px 12px;font-size:12px;color:var(--muted);white-space:pre-wrap;max-height:240px;
-         overflow:auto;margin-top:10px"></pre>
+    <nav class="pivot-headers" id="pivotHeaders" role="tablist">
+      <button class="pivot-header-item" role="tab" data-page="notify">通知</button>
+      <button class="pivot-header-item" role="tab" data-page="agents">青源机器</button>
+      <button class="pivot-header-item" role="tab" data-page="deploy">部署</button>
+      <button class="pivot-header-item" role="tab" data-page="login">登录</button>
+      <button class="pivot-header-item" role="tab" data-page="panels">宝塔面板</button>
+    </nav>
+  </header>
 
-    <div style="margin-top:16px">
-      <div class="desc" style="margin-bottom:8px">已记住密码的服务器：</div>
-      <div id="agentHosts"></div>
+  <main class="content" id="content">
+    <div class="notice" id="oobeBanner" style="display:none;max-width:760px">
+      这是首次配置：先到「登录」设好密码，再到「部署」给机器装青源 agent。之后这个页面一直在 <code>/settings</code>。
+      <strong>如果看板打算公网暴露，请先完成登录密码</strong>，否则这里对任何能访问到的人都是开放的。
     </div>
-  </section>
 
-  <section>
-    <h2>青源机器</h2>
-    <div class="desc">上报过的机器会一直被盯着，离线超过 3 分钟就告警。机器退役或卸掉 agent 后在这里移除；
-      移除后如果它又开始上报，会自动回到列表里。</div>
-    <div id="agentList"></div>
-  </section>
-
-  <section>
-    <h2>登录验证</h2>
-    <div class="desc">Dashboard 如果要长期公网暴露，务必开启。密码输入框留空 = 不修改已保存的密码。</div>
-    <div class="checkbox-row"><input type="checkbox" id="authEnabled"> 开启登录验证</div>
-    <div class="row2">
-      <div>
-        <label>用户名</label>
-        <input type="text" id="authUsername" placeholder="mizuki">
+    <!-- 通知 -->
+    <section class="page" data-page="notify">
+      <div class="group">
+        <div class="group-header">告警阈值</div>
+        <div class="description">CPU、内存、磁盘使用率超过这个百分比就告警；看板上的红色也用同一套阈值。</div>
+        <div class="form-grid">
+          <label class="field">CPU %<input type="number" id="thCpu" value="90"></label>
+          <label class="field">内存 %<input type="number" id="thMem" value="90"></label>
+          <label class="field">磁盘 %<input type="number" id="thDisk" value="85"></label>
+          <label class="field">同一条告警最小推送间隔（秒）<input type="number" id="cooldown" value="600"></label>
+        </div>
       </div>
-      <div>
-        <label>新密码</label>
-        <input type="password" id="authPassword" placeholder="留空则不修改">
-        <div class="hint" id="authPasswordHint"></div>
+
+      <div class="group">
+        <div class="group-header">飞书</div>
+        <div class="description">群设置 → 群机器人 → 添加"自定义机器人"，把 Webhook 地址填在这里。</div>
+        <label class="check"><input type="checkbox" id="feishuEnabled"> 开启飞书推送</label>
+        <div class="form-grid">
+          <label class="field">Webhook 地址
+            <input type="password" id="feishuWebhook" placeholder="留空则不修改">
+            <span class="field-hint" id="feishuHint"></span>
+          </label>
+        </div>
+        <div class="inline">
+          <button type="button" class="btn" onclick="testFeishu()">发送测试通知</button>
+          <span id="feishuTestMsg" class="caption">测试用的是已保存的配置，改了 Webhook 要先保存。</span>
+        </div>
       </div>
-    </div>
-    <div class="row2">
-      <div>
-        <label>连续失败几次后锁定</label>
-        <input type="number" id="authMaxAttempts" value="5">
+
+      <div class="group">
+        <div class="group-header">邮件</div>
+        <label class="check"><input type="checkbox" id="emailEnabled"> 开启邮件推送</label>
+        <div class="form-grid">
+          <label class="field">SMTP 服务器<input type="text" id="emailHost" placeholder="smtp.qq.com"></label>
+          <label class="field">端口<input type="number" id="emailPort" value="465"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="emailSsl"> 使用 SSL（465 端口通常勾选）</label>
+        <label class="check"><input type="checkbox" id="emailTls"> 使用 STARTTLS（587 端口通常勾选）</label>
+        <div class="form-grid">
+          <label class="field">发信账号<input type="text" id="emailUsername" placeholder="you@qq.com"></label>
+          <label class="field">SMTP 授权码
+            <input type="password" id="emailPassword" placeholder="留空则不修改">
+            <span class="field-hint" id="emailHint"></span>
+          </label>
+          <label class="field">发件人<input type="text" id="emailFrom" placeholder="you@qq.com"></label>
+          <label class="field">收件人（多个用逗号分隔）<input type="text" id="emailTo" placeholder="a@b.com, c@d.com"></label>
+        </div>
       </div>
-      <div>
-        <label>锁定时长（秒）</label>
-        <input type="number" id="authLockout" value="900">
+      <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
+    </section>
+
+    <!-- 青源机器 -->
+    <section class="page" data-page="agents" hidden>
+      <div class="group">
+        <div class="description">上报过的机器会一直被盯着，离线超过 3 分钟就告警。机器退役或卸掉 agent 后在这里移除；
+          移除后如果它又开始上报，会自动回到列表里。</div>
+        <div id="agentList"></div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section>
-    <h2>Passkey（免密码登录）</h2>
-    <div class="desc">用设备生物识别 / 安全密钥登录，密码登录依然保留作为备用方式。需要通过 HTTPS 访问（本机 localhost 除外）。</div>
-    <div id="passkeyList"></div>
-    <button class="add" onclick="addPasskey()">+ 添加本设备的 Passkey</button>
-    <div class="hint" id="passkeyHint"></div>
-  </section>
+    <!-- 部署 -->
+    <section class="page" data-page="deploy" hidden>
+      <div class="group">
+        <div class="group-header">一键部署青源 agent</div>
+        <div class="description">填目标服务器的 SSH 信息，自动装好青源 agent 并注册成 systemd 常驻服务。
+          密码只在这次安装里用一次；勾选"记住密码"才会加密保存，方便以后一键重装。</div>
+        <div class="form-grid">
+          <label class="field">服务器 IP<input type="text" id="deployIp" placeholder="10.10.0.5"></label>
+          <label class="field">端口<input type="number" id="deployPort" value="22"></label>
+          <label class="field">SSH 账号<input type="text" id="deployUser" value="root"></label>
+          <label class="field">密码<input type="password" id="deployPassword" placeholder="SSH 登录密码"></label>
+        </div>
+        <div class="form-grid">
+          <label class="field">这台机器是不是某个宝塔面板？
+            <select id="deployBindPanel"><option value="">不绑定（用远端 hostname 当名字）</option></select>
+            <span class="field-hint">选了的话青源上报会用那个面板的名字，两边数据显示在同一张卡片上。</span>
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="deployRemember"> 记住这台服务器的密码（加密保存）</label>
+        <div class="inline" style="margin-top:var(--gutter)">
+          <button class="btn btn-accent" onclick="deployAgent()">一键安装</button>
+          <span id="deployMsg" class="caption"></span>
+        </div>
+        <pre id="deployLog" class="log" hidden style="margin-top:var(--gutter)"></pre>
+      </div>
+      <div class="group">
+        <div class="group-header">已记住密码的服务器</div>
+        <div id="agentHosts"></div>
+      </div>
+    </section>
 
-  <section>
-    <h2>告警阈值</h2>
-    <div class="desc">CPU / 内存 / 磁盘使用率超过这个百分比就触发告警。</div>
-    <div class="row2" style="grid-template-columns:1fr 1fr 1fr">
-      <div><label>CPU %</label><input type="number" id="thCpu" value="90"></div>
-      <div><label>内存 %</label><input type="number" id="thMem" value="90"></div>
-      <div><label>磁盘 %</label><input type="number" id="thDisk" value="85"></div>
-    </div>
-    <label>同一条告警最小推送间隔（秒）</label>
-    <input type="number" id="cooldown" value="600">
-  </section>
+    <!-- 登录 -->
+    <section class="page" data-page="login" hidden>
+      <div class="group">
+        <div class="group-header">密码</div>
+        <div class="description">看板如果要公网暴露，务必开启。密码留空表示不修改。</div>
+        <label class="check"><input type="checkbox" id="authEnabled"> 开启登录验证</label>
+        <div class="form-grid">
+          <label class="field">用户名<input type="text" id="authUsername" placeholder="mizuki"></label>
+          <label class="field">新密码
+            <input type="password" id="authPassword" placeholder="留空则不修改">
+            <span class="field-hint" id="authPasswordHint"></span>
+          </label>
+          <label class="field">连续失败几次后锁定<input type="number" id="authMaxAttempts" value="5"></label>
+          <label class="field">锁定时长（秒）<input type="number" id="authLockout" value="900"></label>
+        </div>
+        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
+      </div>
+      <div class="group">
+        <div class="group-header">Passkey</div>
+        <div class="description">用设备生物识别或安全密钥登录，密码登录照样保留。需要通过 HTTPS 访问（本机 localhost 除外）。</div>
+        <div id="passkeyList"></div>
+        <div class="inline" style="margin-top:var(--gutter)">
+          <button class="btn" onclick="addPasskey()">添加本设备的 Passkey</button>
+          <span class="caption" id="passkeyHint"></span>
+        </div>
+      </div>
+    </section>
 
-  <section>
-    <h2>飞书推送</h2>
-    <div class="desc">群设置 → 群机器人 → 添加"自定义机器人"，把 Webhook 地址填在这里。</div>
-    <div class="checkbox-row"><input type="checkbox" id="feishuEnabled"> 开启飞书推送</div>
-    <label>Webhook 地址</label>
-    <input type="password" id="feishuWebhook" placeholder="留空则不修改">
-    <div class="hint" id="feishuHint"></div>
-    <div class="hint">测试用的是<b>已保存</b>的配置，改了 Webhook 要先"保存配置"再测试。</div>
-    <button type="button" onclick="testFeishu()">发送测试通知</button>
-    <span id="feishuTestMsg" class="hint"></span>
-  </section>
+    <!-- 宝塔面板 -->
+    <section class="page" data-page="panels" hidden>
+      <div class="group">
+        <div class="description">可选数据源：宝塔面板的地址和 API 密钥。地址建议填 WireGuard 内网地址（如 <code>http://10.10.0.2:18101</code>）。
+          只用青源 agent 的话这里留空就行。</div>
+        <div id="panels"></div>
+        <button class="btn" onclick="addPanelRow()" style="margin-top:var(--gutter)">添加面板</button>
+        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
+      </div>
+    </section>
+  </main>
 
-  <section>
-    <h2>邮件推送</h2>
-    <div class="checkbox-row"><input type="checkbox" id="emailEnabled"> 开启邮件推送</div>
-    <div class="row2">
-      <div><label>SMTP 服务器</label><input type="text" id="emailHost" placeholder="smtp.qq.com"></div>
-      <div><label>端口</label><input type="number" id="emailPort" value="465"></div>
-    </div>
-    <div class="checkbox-row"><input type="checkbox" id="emailSsl"> 使用 SSL（465 端口通常勾选）</div>
-    <div class="checkbox-row"><input type="checkbox" id="emailTls"> 使用 STARTTLS（587 端口通常勾选）</div>
-    <div class="row2">
-      <div><label>发信账号</label><input type="text" id="emailUsername" placeholder="you@qq.com"></div>
-      <div><label>SMTP 授权码</label><input type="password" id="emailPassword" placeholder="留空则不修改"></div>
-    </div>
-    <label>发件人</label>
-    <input type="text" id="emailFrom" placeholder="you@qq.com">
-    <label>收件人（多个用逗号分隔）</label>
-    <input type="text" id="emailTo" placeholder="a@b.com, c@d.com">
-    <div class="hint" id="emailHint"></div>
-  </section>
-
-  <div class="actions">
-    <button class="primary" onclick="save()">保存配置</button>
-    <span id="msg"></span>
-  </div>
-</main>
-<footer>25:00 — 设置也要好好收拾。 · Nightcord Series</footer>
+  <footer class="status-bar">
+    <a class="status-item" href="/">‹ 看板</a>
+    <span class="status-item" id="statusSummary"></span>
+    <span class="status-spacer"></span>
+    <button class="status-item" id="logout">退出登录</button>
+  </footer>
+</div>
 
 <script>
 const SECRET_PLACEHOLDER = '••••••••';
-let oldPanelNames = new Set();
+const PAGES = ['notify', 'agents', 'deploy', 'login', 'panels'];
 
+// ---------- pages (Pivot) ----------
+function currentPage(){
+  const m = location.hash.match(/^#s=(\w+)$/);
+  return m && PAGES.includes(m[1]) ? m[1] : 'notify';
+}
+function showPage(animate){
+  const page = currentPage();
+  document.querySelectorAll('.pivot-header-item').forEach(b => b.setAttribute('aria-selected', String(b.dataset.page === page)));
+  document.querySelectorAll('section.page').forEach(s => {
+    const on = s.dataset.page === page;
+    s.hidden = !on;
+    s.classList.toggle('entering', on && animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  });
+  document.getElementById('content').scrollTop = 0;
+}
+document.getElementById('pivotHeaders').addEventListener('click', e => {
+  const b = e.target.closest('[data-page]');
+  if(b) location.hash = '#s=' + b.dataset.page;
+});
+window.addEventListener('hashchange', () => showPage(true));
+// Swipe between pages (touch / pen only).
+(() => {
+  let sx = null, sy = null;
+  const c = document.getElementById('content');
+  c.addEventListener('pointerdown', e => { if(e.pointerType !== 'mouse' && !e.target.closest('input,select,textarea')){ sx = e.clientX; sy = e.clientY; } });
+  c.addEventListener('pointerup', e => {
+    if(sx === null) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+    if(Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    const i = PAGES.indexOf(currentPage()) + (dx < 0 ? 1 : -1);
+    if(i >= 0 && i < PAGES.length) location.hash = '#s=' + PAGES[i];
+  });
+})();
+
+// ---------- 宝塔面板 ----------
 function panelRowHtml(p){
   p = p || {name:'', url:'', api_key:'', verify_ssl:false};
   const keyPlaceholder = p.api_key === SECRET_PLACEHOLDER ? '已设置，留空则不修改' : '面板设置-API接口 里的密钥';
   return `<div class="panel-card">
-    <button class="remove" onclick="this.closest('.panel-card').remove()">删除</button>
-    <div class="row2">
-      <div><label>名称</label><input type="text" class="p-name" value="${escapeAttr(p.name)}" placeholder="例如：上海-Web01"></div>
-      <div><label>地址（含端口）</label><input type="text" class="p-url" value="${escapeAttr(p.url)}" placeholder="http://10.10.0.2:18101"></div>
+    <div class="card-head"><span class="caption">宝塔面板</span>
+      <button class="command btn-danger" onclick="this.closest('.panel-card').remove()">删除</button></div>
+    <div class="form-grid">
+      <label class="field">名称<input type="text" class="p-name" value="${escapeAttr(p.name)}" placeholder="例如：上海-Web01"></label>
+      <label class="field">地址（含端口）<input type="text" class="p-url" value="${escapeAttr(p.url)}" placeholder="http://10.10.0.2:18101"></label>
+      <label class="field">API 密钥<input type="password" class="p-key" placeholder="${keyPlaceholder}"></label>
     </div>
-    <label>API 密钥</label>
-    <input type="password" class="p-key" placeholder="${keyPlaceholder}">
-    <div class="checkbox-row"><input type="checkbox" class="p-ssl" ${p.verify_ssl?'checked':''}> 校验 SSL 证书（面板用自签证书时不要勾）</div>
+    <label class="check"><input type="checkbox" class="p-ssl" ${p.verify_ssl?'checked':''}> 校验 SSL 证书（自签证书不要勾）</label>
   </div>`;
 }
 
@@ -224,6 +244,7 @@ function escapeAttr(s){
   return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+// ---------- Passkey ----------
 function base64urlToBuffer(base64url){
   const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
   const pad = base64.length % 4 ? '='.repeat(4 - base64.length % 4) : '';
@@ -247,15 +268,14 @@ async function loadPasskeys(){
   const el = document.getElementById('passkeyList');
   el.innerHTML = '';
   if(!list.length){
-    el.innerHTML = '<div class="hint">还没有添加任何 Passkey</div>';
+    el.innerHTML = '<div class="empty-hint">还没有添加任何 Passkey</div>';
     return;
   }
   list.forEach(p => {
     const date = p.created_at ? new Date(p.created_at * 1000).toLocaleString() : '';
-    el.insertAdjacentHTML('beforeend', `<div class="panel-card" data-passkey-id="${escapeAttr(p.credential_id)}">
-      <button class="remove passkey-delete">删除</button>
-      <div>${escapeAttr(p.name)}</div>
-      <div class="hint">添加于 ${date}</div>
+    el.insertAdjacentHTML('beforeend', `<div class="list-item panel-card" data-passkey-id="${escapeAttr(p.credential_id)}">
+      <div><div>${escapeAttr(p.name)}</div><div class="caption">添加于 ${date}</div></div>
+      <div class="actions"><button class="command btn-danger passkey-delete">删除</button></div>
     </div>`);
   });
   el.querySelectorAll('.passkey-delete').forEach(button => {
@@ -313,18 +333,19 @@ async function addPasskey(){
   }
 }
 
+// ---------- config load / save ----------
+// Saving submits every field, so it stays disabled until the form holds the saved config:
+// saving defaults (e.g. an unchecked "开启登录验证") would silently switch protections off.
+function setSaveEnabled(on){ document.querySelectorAll('.save-btn').forEach(b => { b.disabled = !on; }); }
+
 async function load(){
+  setSaveEnabled(false);
   const res = await fetch('/api/config');
+  if(!res.ok){ setSaveMsg('err', `读取配置失败（HTTP ${res.status}），刷新页面再试`); return; }
   const cfg = await res.json();
 
   document.getElementById('panels').innerHTML = '';
-  oldPanelNames = new Set((cfg.panels||[]).map(p=>p.name));
-  if(!cfg.panels || !cfg.panels.length){
-    document.getElementById('oobeBanner').style.display = 'block';
-    addPanelRow();
-  } else {
-    cfg.panels.forEach(p => addPanelRow(p));
-  }
+  (cfg.panels || []).forEach(p => addPanelRow(p));
 
   const da = cfg.dashboard_auth || {};
   document.getElementById('authEnabled').checked = !!da.enabled;
@@ -356,13 +377,23 @@ async function load(){
   document.getElementById('emailHint').textContent = em.password === SECRET_PLACEHOLDER ? '已设置授权码（留空保持不变）' : '还没设置';
 
   const bindSelect = document.getElementById('deployBindPanel');
-  bindSelect.innerHTML = '<option value="">不绑定（用远端 hostname 当卡片名字）</option>' +
+  bindSelect.innerHTML = '<option value="">不绑定（用远端 hostname 当名字）</option>' +
     (cfg.panels || []).map(p => `<option value="${escapeAttr(p.name)}">${escapeAttr(p.name)}</option>`).join('');
+  setSaveEnabled(true);
+
+  // First run = nothing configured yet: no password and no data source (no BT panel, no agent has
+  // ever reported, Nightcord-Status off). Checked after the form is filled, so it never holds up saving.
+  const banner = document.getElementById('oobeBanner');
+  banner.style.display = 'none';
+  if(!da.has_password && !(cfg.panels || []).length && !cfg.nightcord_status_enabled){
+    const agents = await fetch('/api/agents').then(r => r.ok ? r.json() : {agents: []}).catch(() => ({agents: []}));
+    if(!(agents.agents || []).length) banner.style.display = 'block';
+  }
 }
 
 function collectPanels(){
-  // 只收集面板列表里的卡片；passkey、记住密码的服务器、青源机器列表也用 .panel-card 样式，
-  // 它们没有 .p-name 这些输入框，一起收集会抛错，保存按钮就永远停在"保存中"
+  // 只收集面板列表里的卡片；passkey 列表也用 .panel-card 样式，它没有 .p-name 这些输入框，
+  // 一起收集会抛错，保存按钮就永远停在"保存中"
   return Array.from(document.querySelectorAll('#panels .panel-card')).map(card => ({
     name: card.querySelector('.p-name').value.trim(),
     url: card.querySelector('.p-url').value.trim(),
@@ -371,46 +402,49 @@ function collectPanels(){
   })).filter(p => p.name || p.url);
 }
 
+function setSaveMsg(cls, text){
+  document.querySelectorAll('.save-msg').forEach(m => { m.className = 'save-msg ' + cls; m.textContent = text; });
+}
+
 async function save(){
-  const msg = document.getElementById('msg');
-  msg.className = '';
-  msg.textContent = '保存中…';
-
-  const payload = {
-    panels: collectPanels(),
-    dashboard_auth: {
-      enabled: document.getElementById('authEnabled').checked,
-      username: document.getElementById('authUsername').value.trim(),
-      new_password: document.getElementById('authPassword').value,
-      max_attempts: parseInt(document.getElementById('authMaxAttempts').value) || 5,
-      lockout_seconds: parseInt(document.getElementById('authLockout').value) || 900,
-    },
-    notifications: {
-      cooldown_seconds: parseInt(document.getElementById('cooldown').value) || 600,
-      thresholds: {
-        cpu: parseInt(document.getElementById('thCpu').value) || 90,
-        mem: parseInt(document.getElementById('thMem').value) || 90,
-        disk: parseInt(document.getElementById('thDisk').value) || 85,
-      },
-      feishu: {
-        enabled: document.getElementById('feishuEnabled').checked,
-        webhook: document.getElementById('feishuWebhook').value.trim(),
-      },
-      email: {
-        enabled: document.getElementById('emailEnabled').checked,
-        smtp_host: document.getElementById('emailHost').value.trim(),
-        smtp_port: parseInt(document.getElementById('emailPort').value) || 465,
-        use_ssl: document.getElementById('emailSsl').checked,
-        use_tls: document.getElementById('emailTls').checked,
-        username: document.getElementById('emailUsername').value.trim(),
-        password: document.getElementById('emailPassword').value,
-        from: document.getElementById('emailFrom').value.trim(),
-        to: document.getElementById('emailTo').value,
-      },
-    },
-  };
-
+  if(document.querySelector('.save-btn').disabled) return;
+  setSaveEnabled(false);
+  setSaveMsg('', '保存中…');
   try{
+    // 保存是整份配置一起提交：各页的输入框都在页面里（只是不显示），哪一页点保存都一样
+    const payload = {
+      panels: collectPanels(),
+      dashboard_auth: {
+        enabled: document.getElementById('authEnabled').checked,
+        username: document.getElementById('authUsername').value.trim(),
+        new_password: document.getElementById('authPassword').value,
+        max_attempts: parseInt(document.getElementById('authMaxAttempts').value) || 5,
+        lockout_seconds: parseInt(document.getElementById('authLockout').value) || 900,
+      },
+      notifications: {
+        cooldown_seconds: parseInt(document.getElementById('cooldown').value) || 600,
+        thresholds: {
+          cpu: parseInt(document.getElementById('thCpu').value) || 90,
+          mem: parseInt(document.getElementById('thMem').value) || 90,
+          disk: parseInt(document.getElementById('thDisk').value) || 85,
+        },
+        feishu: {
+          enabled: document.getElementById('feishuEnabled').checked,
+          webhook: document.getElementById('feishuWebhook').value.trim(),
+        },
+        email: {
+          enabled: document.getElementById('emailEnabled').checked,
+          smtp_host: document.getElementById('emailHost').value.trim(),
+          smtp_port: parseInt(document.getElementById('emailPort').value) || 465,
+          use_ssl: document.getElementById('emailSsl').checked,
+          use_tls: document.getElementById('emailTls').checked,
+          username: document.getElementById('emailUsername').value.trim(),
+          password: document.getElementById('emailPassword').value,
+          from: document.getElementById('emailFrom').value.trim(),
+          to: document.getElementById('emailTo').value,
+        },
+      },
+    };
     const res = await fetch('/api/config', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -418,39 +452,41 @@ async function save(){
     });
     const data = await res.json();
     if(!res.ok){
-      msg.className = 'err';
-      msg.textContent = (data.errors || [data.error || '保存失败']).join('；');
+      setSaveMsg('err', (data.errors || [data.error || '保存失败']).join('；'));
+      setSaveEnabled(true);
       return;
     }
-    msg.className = 'ok';
-    msg.textContent = '已保存 ✓';
-    document.getElementById('oobeBanner').style.display = 'none';
+    setSaveMsg('ok', '已保存 ✓');
+    document.getElementById('authPassword').value = '';
+    document.getElementById('feishuWebhook').value = '';
+    document.getElementById('emailPassword').value = '';
     await load();
   }catch(e){
-    msg.className = 'err';
-    msg.textContent = '保存失败：' + e;
+    setSaveMsg('err', '保存失败：' + e);
+    setSaveEnabled(true);
   }
 }
 
+// ---------- 青源机器 ----------
 async function loadAgentList(){
   const res = await fetch('/api/agents');
   const data = await res.json();
   const wrap = document.getElementById('agentList');
   const agents = data.agents || [];
+  const online = agents.filter(a => a.online).length;
+  document.getElementById('statusSummary').textContent = agents.length ? `${online} / ${agents.length} 在线` : '';
   if(!agents.length){
-    wrap.innerHTML = '<div class="hint">还没有机器上报过。</div>';
+    wrap.innerHTML = '<div class="empty-hint">还没有机器上报过。</div>';
     return;
   }
   wrap.innerHTML = agents.map(a => `
-    <div class="panel-card" style="padding:8px 12px" data-agent-name="${escapeAttr(a.name)}">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-        <div style="font-size:13px">
-          <strong>${escapeAttr(a.name)}</strong>
-          <span style="color:${a.online ? 'var(--ok)' : 'var(--bad)'}">${a.online ? '在线' : '离线'}</span><br>
-          <span class="hint">最后一次上报：${escapeAttr(new Date(a.last_seen * 1000).toLocaleString())}</span>
-        </div>
-        <button class="retire-btn" style="color:var(--bad)">移除</button>
+    <div class="list-item" data-agent-name="${escapeAttr(a.name)}">
+      <div>
+        <div><span style="font:var(--type-base)">${escapeAttr(a.name)}</span>
+          <span class="${a.online ? 'ok' : 'warn'}" style="margin-left:8px">${a.online ? '在线' : '离线'}</span></div>
+        <div class="caption">最后一次上报：${escapeAttr(new Date(a.last_seen * 1000).toLocaleString())}</div>
       </div>
+      <div class="actions"><button class="command btn-danger retire-btn">移除</button></div>
     </div>
   `).join('');
   wrap.querySelectorAll('.retire-btn').forEach(btn => {
@@ -468,26 +504,25 @@ async function retireAgent(name){
   await loadAgentList();
 }
 
+// ---------- 部署 ----------
 async function loadAgentHosts(){
   const res = await fetch('/api/agent/hosts');
   const data = await res.json();
   const wrap = document.getElementById('agentHosts');
   const hosts = data.hosts || [];
   if(!hosts.length){
-    wrap.innerHTML = '<div class="hint">还没有记住任何服务器的密码。</div>';
+    wrap.innerHTML = '<div class="empty-hint">还没有记住任何服务器的密码。</div>';
     return;
   }
   wrap.innerHTML = hosts.map(h => `
-    <div class="panel-card" style="padding:8px 12px" data-host-id="${escapeAttr(h.id)}">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-        <div style="font-size:13px">
-          <strong>${escapeAttr(h.panel_name || h.ip)}</strong><br>
-          <span class="hint">${escapeAttr(h.ssh_user)}@${escapeAttr(h.ip)}:${escapeAttr(h.port)}</span>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button class="redeploy-btn">重新安装</button>
-          <button class="delete-btn" style="color:var(--bad)">删除</button>
-        </div>
+    <div class="list-item" data-host-id="${escapeAttr(h.id)}">
+      <div>
+        <div style="font:var(--type-base)">${escapeAttr(h.panel_name || h.ip)}</div>
+        <div class="caption">${escapeAttr(h.ssh_user)}@${escapeAttr(h.ip)}:${escapeAttr(h.port)}</div>
+      </div>
+      <div class="actions">
+        <button class="command redeploy-btn">重新安装</button>
+        <button class="command btn-danger delete-btn">删除</button>
       </div>
     </div>
   `).join('');
@@ -501,11 +536,10 @@ async function loadAgentHosts(){
 
 async function streamDeploy(url, options, msg, log, onDone){
   // /api/agent/deploy 和 .../redeploy 返回的是 NDJSON 流（一行一个 JSON），
-  // 装的过程（建虚拟环境、装依赖）动辄一两分钟，边跑边把日志行 push 过来，
-  // 不用像以前那样干等到最后才看到一大坨文字。
-  msg.className = '';
+  // 装的过程（建虚拟环境、装依赖）动辄一两分钟，边跑边把日志行 push 过来。
+  msg.className = 'caption';
   msg.textContent = '安装中，可能需要一两分钟…';
-  log.style.display = 'block';
+  log.hidden = false;
   log.textContent = '';
   try{
     const res = await fetch(url, options);
@@ -513,7 +547,7 @@ async function streamDeploy(url, options, msg, log, onDone){
       const data = await res.json().catch(() => ({}));
       msg.className = 'err';
       msg.textContent = '安装失败：' + (data.error || `HTTP ${res.status}`);
-      log.style.display = 'none';
+      log.hidden = true;
       return;
     }
     const reader = res.body.getReader();
@@ -535,7 +569,7 @@ async function streamDeploy(url, options, msg, log, onDone){
         } else if(evt.type === 'done'){
           if(evt.ok){
             msg.className = 'ok';
-            msg.textContent = `安装成功 ✓（面板名：${evt.panel_name}）`;
+            msg.textContent = `安装成功 ✓（名字：${evt.panel_name}）`;
             if(onDone) await onDone(evt);
           } else {
             msg.className = 'err';
@@ -552,7 +586,7 @@ async function streamDeploy(url, options, msg, log, onDone){
 
 async function testFeishu(){
   const msg = document.getElementById('feishuTestMsg');
-  msg.className = 'hint';
+  msg.className = 'caption';
   msg.textContent = '发送中…';
   try{
     const res = await fetch('/api/notifications/test', {method: 'POST'});
@@ -601,6 +635,12 @@ async function deleteHost(id){
   await loadAgentHosts();
 }
 
+document.getElementById('logout').addEventListener('click', async () => {
+  await fetch('/logout', {method:'POST'});
+  location.href = '/login';
+});
+
+showPage(false);
 load();
 loadAgentHosts();
 loadAgentList();
