@@ -48,6 +48,19 @@ class RemoteCacheTests(AppTestCase):
         self.assertEqual([p["name"] for p in body["panels"]], [])
         self.assertFalse(body["remote_pending"])
 
+    def test_fetch_uses_one_config_snapshot_for_fingerprint_and_sources(self):
+        # ena: config A → B (panel added) → back to A while a fetch runs. The result fetched under B
+        # must not land with A's fingerprint.
+        self.write_config({"panels": []})
+        ticket = app._begin_remote_fetch()
+        self.write_config({"panels": [{"name": "bt-temp", "url": "http://x", "api_key": "k"}]})
+        result = app.fetch_remote(ticket["cfg"])
+        self.write_config({"panels": []})
+        app._store_remote(result, ticket)
+        app._refresh_remote_async = lambda: None
+        body = self.client.get("/api/status").get_json()
+        self.assertEqual([p["name"] for p in body["panels"]], [])
+
     def test_an_earlier_fetch_cannot_overwrite_a_later_one(self):
         self.write_config({"panels": [{"name": "bt", "url": "http://x", "api_key": "k"}]})
         first = app._begin_remote_fetch()

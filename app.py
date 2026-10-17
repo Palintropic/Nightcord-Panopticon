@@ -311,7 +311,7 @@ def webauthn_login_verify():
 def fetch_all():
     """采集远程数据源（顺便更新缓存）并叠加青源数据。后台巡检用；看板请求走 api_status 的非阻塞路径。"""
     ticket = _begin_remote_fetch()
-    remote = fetch_remote()
+    remote = fetch_remote(ticket["cfg"])
     _store_remote(remote, ticket)
     return _with_qingyuan(remote)
 
@@ -333,12 +333,15 @@ def _remote_fingerprint(cfg=None):
 
 
 def _begin_remote_fetch():
-    """采集开始时调用：记下当时的配置指纹，领一个序号。指纹在采集之前取，配置若在采集中途改了，
-    这份结果的指纹就是旧的，读的时候会被当作过期。"""
-    fp = _remote_fingerprint()
+    """采集开始时调用：读一次配置快照，指纹和接下来的采集都只用这一份（见 fetch_remote 的 cfg 参数），
+    并领一个序号。配置若在采集中途改了，这份结果的指纹就是旧的，读的时候会被当作过期。"""
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
     with _remote_lock:
         _remote["seq"] += 1
-        return {"seq": _remote["seq"], "fp": fp}
+        return {"seq": _remote["seq"], "fp": _remote_fingerprint(cfg), "cfg": cfg}
 
 
 def _store_remote(data, ticket):
@@ -367,7 +370,7 @@ def _refresh_remote_async():
     def run():
         try:
             ticket = _begin_remote_fetch()
-            _store_remote(fetch_remote(), ticket)
+            _store_remote(fetch_remote(ticket["cfg"]), ticket)
         except Exception as e:
             print(f"[remote refresh] 出错: {e}")
         finally:
@@ -377,9 +380,9 @@ def _refresh_remote_async():
     threading.Thread(target=run, daemon=True).start()
 
 
-def fetch_remote():
-    """宝塔面板 + Nightcord-Status 的原始采集结果（不含青源数据）。"""
-    panels = load_panels()
+def fetch_remote(cfg):
+    """宝塔面板 + Nightcord-Status 的原始采集结果（不含青源数据），只按传进来的配置快照采集。"""
+    panels = cfg.get("panels") or []
     results = []
     with ThreadPoolExecutor(max_workers=max(1, len(panels))) as pool:
         futures = {
@@ -398,7 +401,7 @@ def fetch_remote():
     order = {p["name"]: i for i, p in enumerate(panels)}
     results.sort(key=lambda r: order.get(r.get("name"), 999))
 
-    ns_cfg = load_config().get("nightcord_status", {})
+    ns_cfg = cfg.get("nightcord_status") or {}
     if ns_cfg.get("enabled"):
         try:
             ns_result = NightcordStatusClient(
