@@ -24,7 +24,7 @@ from bt_client import BTClient
 from nightcord_status_client import NightcordStatusClient
 from notifier import Notifier, evaluate_alerts, plan_agent_alerts
 from auth import BruteForceGuard, get_client_ip
-from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance
+from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance, kaomoji_of, clean_kaomoji
 from agent_deploy import deploy_agent, AgentDeployError
 import agent_hosts
 from config_store import load_yaml, save_yaml, update_yaml
@@ -713,6 +713,29 @@ def api_save_appearance():
 
     update_config(put)
     return jsonify(colours)
+
+
+@app.route("/api/kaomoji", methods=["GET"])
+def api_get_kaomoji():
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
+    return jsonify(kaomoji_of(cfg))
+
+
+@app.route("/api/kaomoji", methods=["POST"])
+def api_save_kaomoji():
+    """设置 → 颜文字：整份提交，只动 kaomoji 这一段。"""
+    kaomoji, errors = clean_kaomoji(request.get_json(silent=True) or {})
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    def put(cfg):
+        cfg["kaomoji"] = kaomoji
+
+    update_config(put)
+    return jsonify(kaomoji)
 
 
 @app.route("/api/notifications/test", methods=["POST"])

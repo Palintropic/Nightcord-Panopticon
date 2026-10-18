@@ -107,6 +107,15 @@
   .custom-colour input[type=text]{width:120px}   /* beats the full-width field rule in uwp.css */
   .custom-colour .chip{width:32px;height:32px;flex:0 0 auto}
   /* Presets: three chips (tile, curve, bar) beside the name. */
+  /* 颜文字: machine → character pickers, then one row per character with its three faces. */
+  .assign-row{display:grid;grid-template-columns:minmax(0,1fr) 160px;align-items:center;gap:var(--gutter);
+              min-height:var(--list-item-min-height);max-width:480px}
+  .face-head,.face-row{display:grid;grid-template-columns:64px repeat(3,minmax(0,1fr));align-items:center;
+                       gap:8px;max-width:620px}
+  .face-head{font:var(--type-caption);color:var(--SystemBaseMedium);margin-bottom:4px}
+  .face-row{margin-bottom:8px}
+  .face-row .who{font:var(--type-body)}
+  #kaomojiMsg.ok{color:var(--ok)} #kaomojiMsg.err{color:var(--warn)}
   .presets{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:4px;max-width:760px}
   .preset{display:flex;align-items:center;gap:12px;min-height:var(--list-item-min-height);padding:4px 8px;text-align:left}
   .preset:hover{background:var(--ListPointerOver)}
@@ -163,6 +172,23 @@
         <div class="custom-colour" data-accent-custom="bar"></div>
       </div>
       <div class="caption" id="accentMsg"></div>
+    </section>
+
+    <!-- 颜文字 -->
+    <section class="page" data-page="kaomoji" hidden>
+      <div class="group">
+        <div class="group-header">谁看哪台机器</div>
+        <div class="description">“自动”按机器名固定分一个人。选了马上生效，所有设备一起换。</div>
+        <div id="kaomojiAssign"></div>
+      </div>
+      <div class="group">
+        <div class="group-header">表情</div>
+        <div class="description">每人三种，磁贴按机器状态换。留空就用默认的（框里灰色那个）。最多 24 个字。</div>
+        <div class="face-head"><span></span><span>一切正常</span><span>接近阈值</span><span>离线或需要关注</span></div>
+        <div id="kaomojiFaces"></div>
+        <div class="save-row"><button class="btn btn-accent" id="kaomojiSave">保存</button>
+          <button class="btn" id="kaomojiReset">全部恢复默认</button><span class="caption" id="kaomojiMsg"></span></div>
+      </div>
     </section>
 
     <!-- 通知 -->
@@ -446,6 +472,7 @@ const SETTINGS_PIVOT = 5;
 // redraw never wipes what is being typed.
 const SETTINGS_PAGES = [
   {key:'theme', label:'主题', hint:'浅色 / 深色，磁贴、曲线、状态栏的颜色'},
+  {key:'kaomoji', label:'颜文字', hint:'谁看哪台机器，每人三种表情'},
   {key:'notify', label:'通知', hint:'告警阈值、飞书、邮件'},
   {key:'agents', label:'青源机器', hint:'正在盯着的机器，移除退役的'},
   {key:'deploy', label:'部署', hint:'一键给服务器装青源 agent'},
@@ -735,10 +762,25 @@ const CHARACTERS = [
   ['绘名', ['(๑•̀ω•́)✧', '(¬､¬)', '(ｷ`ﾟДﾟ´)!!']],
   ['瑞希', ['(๑˃ᴗ˂)ﻭ', '(・ε・)', '(｡>ㅅ<｡)']],
 ];
-function characterFor(name){
+// 设置 → 颜文字 can pin a character to a machine and replace any face; both are saved on the
+// server (/api/kaomoji). An unknown character name falls back to the automatic pick.
+let kaomojiConfig = {assign:{}, faces:{}};
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+function autoCharacterFor(name){
   let h = 0;
   for(const c of String(name)) h = (h * 31 + c.codePointAt(0)) >>> 0;
   return CHARACTERS[h % CHARACTERS.length];
+}
+function characterFor(name){
+  const picked = own(kaomojiConfig.assign, name) ? kaomojiConfig.assign[name] : null;
+  const [chara, faces] = CHARACTERS.find(c => c[0] === picked) || autoCharacterFor(name);
+  const custom = own(kaomojiConfig.faces, chara) ? kaomojiConfig.faces[chara] : [];
+  return [chara, faces.map((f, i) => custom[i] || f)];
+}
+function setKaomojiConfig(k){
+  kaomojiConfig = {assign:(k && k.assign) || {}, faces:(k && k.faces) || {}};
+  const r = route();
+  if(r.view === 'list' && r.pivot === 0) render(false);
 }
 
 function tile(p){
@@ -754,7 +796,7 @@ function tile(p){
     <div class="tile-inner">
       <div class="t-state">${down ? '离线' : '在线'}</div>
       <div class="face">${escapeHtml(face)}</div>
-      <div class="tile-label"><span class="chara">${chara}</span><span class="name">${name}</span></div>
+      <div class="tile-label"><span class="chara">${escapeHtml(chara)}</span><span class="name">${name}</span></div>
     </div>
   </a>`;
 }
@@ -1042,6 +1084,7 @@ document.getElementById('logout').addEventListener('click', async () => {
   location.href = '/login';
 });
 
+fetchJsonWithTimeout('/api/kaomoji', 10000).then(r => { if(r.ok) setKaomojiConfig(r.data); }).catch(() => {});
 // Surface colours are saved on the server; theme.js already painted the cached copy.
 fetchJsonWithTimeout('/api/appearance', 10000).then(r => {
   if(r.ok && window.panopticonTheme) window.panopticonTheme.setAccents(r.data);

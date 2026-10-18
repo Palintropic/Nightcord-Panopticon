@@ -18,6 +18,7 @@ const settings = window.panopticonSettings = {
     const first = !settings.loaded;
     settings.ensureLoaded();
     if(page === 'theme') renderAccents();
+    if(page === 'kaomoji') renderKaomoji(fresh);
     if(page === 'agents' && fresh && !first) loadAgentList();
   },
 };
@@ -134,6 +135,76 @@ function applyCustom(part){
   input.blur();
   saveAccents({[part]: v});
 }
+
+// ---------- 颜文字 ----------
+// The character table (CHARACTERS) and the saved choices (kaomojiConfig) live in index.html,
+// which draws the tiles. Picking a character saves at once; typed faces wait for 保存.
+function renderKaomoji(fresh){
+  const assign = kaomojiConfig.assign;
+  const machines = panels().map(p => p.name).filter(Boolean);
+  const options = name => {
+    const picked = own(assign, name) ? assign[name] : '';
+    return `<option value=""${picked ? '' : ' selected'}>自动（${escapeHtml(autoCharacterFor(name)[0])}）</option>` +
+      CHARACTERS.map(([c]) => `<option value="${escapeAttr(c)}"${c === picked ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  };
+  const wrap = document.getElementById('kaomojiAssign');
+  if(!wrap.contains(document.activeElement)){
+    wrap.innerHTML = machines.length ? machines.map(name => `<label class="assign-row"><span>${escapeHtml(name)}</span>
+        <select data-assign="${escapeAttr(name)}">${options(name)}</select></label>`).join('')
+      : '<div class="empty-hint">还没有机器。</div>';
+  }
+  // The face fields are only rebuilt when the page is opened, so a refresh never eats typing.
+  if(!fresh && document.getElementById('kaomojiFaces').children.length) return;
+  document.getElementById('kaomojiFaces').innerHTML = CHARACTERS.map(([c, defaults]) => {
+    const custom = own(kaomojiConfig.faces, c) ? kaomojiConfig.faces[c] : [];
+    return `<div class="face-row" data-chara="${escapeAttr(c)}"><span class="who">${escapeHtml(c)}</span>${defaults.map((d, i) =>
+      `<input type="text" maxlength="24" spellcheck="false" aria-label="${escapeAttr(c)} ${['一切正常', '接近阈值', '离线或需要关注'][i]}"
+        placeholder="${escapeAttr(d)}" value="${escapeAttr(custom[i] || '')}">`).join('')}</div>`;
+  }).join('');
+}
+
+function collectFaces(){
+  const faces = {};
+  document.querySelectorAll('#kaomojiFaces .face-row').forEach(row => {
+    const triple = Array.from(row.querySelectorAll('input')).map(i => i.value.trim());
+    if(triple.some(Boolean)) faces[row.dataset.chara] = triple;
+  });
+  return faces;
+}
+
+async function saveKaomoji(next){
+  const msg = document.getElementById('kaomojiMsg');
+  msg.className = 'caption'; msg.textContent = '保存中…';
+  try{
+    const res = await fetch('/api/kaomoji', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({...kaomojiConfig, ...next})});
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+      msg.className = 'err'; msg.textContent = '没保存上：' + (data.errors || [data.error || `HTTP ${res.status}`]).join('；');
+      return false;
+    }
+    setKaomojiConfig(data);
+    msg.className = 'ok'; msg.textContent = '已保存 ✓';
+    return true;
+  }catch(e){
+    msg.className = 'err'; msg.textContent = '没保存上：' + e;
+    return false;
+  }
+}
+
+document.getElementById('kaomojiAssign').addEventListener('change', e => {
+  const sel = e.target.closest('[data-assign]');
+  if(!sel) return;
+  const assign = {...kaomojiConfig.assign};
+  if(sel.value) assign[sel.dataset.assign] = sel.value; else delete assign[sel.dataset.assign];
+  // Only the pick is sent; face fields not yet saved stay as typed.
+  saveKaomoji({assign, faces:kaomojiConfig.faces});
+});
+document.getElementById('kaomojiSave').addEventListener('click', () => saveKaomoji({faces:collectFaces()}));
+document.getElementById('kaomojiReset').addEventListener('click', async () => {
+  if(!confirm('把 20 个人的表情全部恢复成默认的？（谁看哪台机器不受影响）')) return;
+  if(await saveKaomoji({faces:{}})) renderKaomoji(true);
+});
 
 // ---------- 宝塔面板 ----------
 function panelRowHtml(p){

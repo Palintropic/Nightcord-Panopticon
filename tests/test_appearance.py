@@ -5,7 +5,7 @@ import unittest
 import yaml
 
 import app
-from config_editor import appearance_of, clean_appearance, merge_submitted
+from config_editor import appearance_of, clean_appearance, clean_kaomoji, kaomoji_of, merge_submitted
 
 
 class AppearanceConfigTests(unittest.TestCase):
@@ -27,6 +27,34 @@ class AppearanceConfigTests(unittest.TestCase):
         old = {"appearance": {"tile": "#4455dd", "curve": "#ddaacc", "bar": "#8888cc"}}
         merged, _ = merge_submitted(old, {})
         self.assertEqual(merged["appearance"], old["appearance"])
+
+
+class KaomojiConfigTests(unittest.TestCase):
+    def test_empty_by_default(self):
+        self.assertEqual(kaomoji_of({}), {"assign": {}, "faces": {}})
+
+    def test_blank_triples_are_dropped_and_text_trimmed(self):
+        k, errors = clean_kaomoji({"assign": {"上海": " 瑞希 "},
+                                   "faces": {"瑞希": [" (・ε・) ", "", ""], "奏": ["", "", ""]}})
+        self.assertEqual(errors, [])
+        self.assertEqual(k, {"assign": {"上海": "瑞希"}, "faces": {"瑞希": ["(・ε・)", "", ""]}})
+
+    def test_bad_entries_are_refused(self):
+        _, errors = clean_kaomoji({"faces": {"瑞希": ["a", "b"]}})
+        self.assertEqual(len(errors), 1)
+        _, errors = clean_kaomoji({"faces": {"瑞希": ["x" * 25, "", ""]}})
+        self.assertEqual(len(errors), 1)
+        _, errors = clean_kaomoji({"faces": {"瑞希": ["a\nb", "", ""]}})
+        self.assertEqual(len(errors), 1)
+        _, errors = clean_kaomoji({"assign": {"上海": 3}})
+        self.assertEqual(len(errors), 1)
+        _, errors = clean_kaomoji({"assign": ["上海"]})
+        self.assertEqual(errors, ["格式不对"])
+
+    def test_saving_the_settings_form_keeps_the_kaomoji(self):
+        old = {"kaomoji": {"assign": {"上海": "瑞希"}, "faces": {}}}
+        merged, _ = merge_submitted(old, {})
+        self.assertEqual(merged["kaomoji"], old["kaomoji"])
 
 
 class AppearanceApiTests(unittest.TestCase):
@@ -56,6 +84,15 @@ class AppearanceApiTests(unittest.TestCase):
         r = self.client.post("/api/appearance", json={"tile": "javascript:x", "curve": "#bbdd22", "bar": "#33aaee"})
         self.assertEqual(r.status_code, 400)
         self.assertEqual(self.client.get("/api/appearance").get_json()["tile"], "#884499")
+
+    def test_kaomoji_save_then_read_back(self):
+        body = {"assign": {"东京": "爱莉"}, "faces": {"爱莉": ["", "", "(｀皿´)"]}}
+        r = self.client.post("/api/kaomoji", json=body)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.client.get("/api/kaomoji").get_json(), body)
+        r = self.client.post("/api/kaomoji", json={"faces": {"爱莉": ["x" * 30, "", ""]}})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.client.get("/api/kaomoji").get_json(), body)
 
     def test_old_settings_address_lands_on_the_settings_pivot(self):
         for path in ("/settings", "/setup"):
