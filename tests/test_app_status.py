@@ -99,5 +99,108 @@ class DeployTests(AppTestCase):
         self.assertTrue(events[-1]["ok"])
 
 
+class StatusPushTests(AppTestCase):
+    SECRET = "s3cret"
+
+    def setUp(self):
+        super().setUp()
+        self.write_config({
+            "metrics_agent": {"enabled": True, "shared_secret": self.SECRET},
+            "nightcord_status": {"enabled": True, "name": "Nightcord-Status", "source": "push"},
+        })
+
+    def push(self, targets, secret=SECRET):
+        return self.client.post(
+            app.STATUS_REPORT_PATH,
+            json={"last_updated": "2026-10-19T00:00:00+08:00", "targets": targets},
+            headers={"X-Metrics-Secret": secret},
+        )
+
+    def card(self):
+        app._refresh_remote_async = lambda: None
+        body = self.client.get("/api/status").get_json()
+        return next(p for p in body["panels"] if p["kind"] == "nightcord-status"), body
+
+    def test_wrong_secret_is_rejected(self):
+        self.assertEqual(self.push([], secret="nope").status_code, 401)
+        self.assertIsNone(metrics_store.get_status_push(app.STATUS_PUSH_SOURCE))
+
+    def test_disabled_when_not_in_push_mode(self):
+        self.write_config({"metrics_agent": {"shared_secret": self.SECRET},
+                           "nightcord_status": {"enabled": True, "url": "http://10.10.0.4:8702"}})
+        self.assertEqual(self.push([]).status_code, 404)
+
+    def test_pushed_targets_show_on_the_card_without_a_remote_fetch(self):
+        resp = self.push([
+            {"id": "esxi-1", "display_name": "Nightcord-ESXi-1", "type": "esxi", "status": "down",
+             "last_error": "timed out", "detail": {"host": "192.168.3.230"}},
+            {"id": "x", "status": "weird", "detail": "not a dict"},
+            "garbage",
+        ])
+        self.assertEqual(resp.get_json(), {"ok": True, "targets": 2})
+        card, body = self.card()
+        self.assertTrue(card["online"])
+        self.assertFalse(body["remote_pending"])
+        self.assertEqual(card["targets"][0]["status"], "down")
+        self.assertEqual(card["targets"][1], {"id": "x", "display_name": "x", "type": "",
+                                              "status": "unknown", "last_error": None, "detail": {}})
+
+    def test_card_goes_offline_when_pushes_stop(self):
+        metrics_store.save_status_push(app.STATUS_PUSH_SOURCE, 1000, {"targets": []})
+        card = app._nightcord_push_card(app.load_config(), 1000 + app.STATUS_PUSH_STALE_SECONDS + 1)
+        self.assertFalse(card["online"])
+        self.assertIn("没有推送", card["error"])
+
+    def test_card_offline_before_first_push(self):
+        card, _ = self.card()
+        self.assertFalse(card["online"])
+
+
+class StatusPushAlertRoundTests(StatusPushTests):
+    """End-to-end through _alert_round: what actually reaches the webhook."""
+
+    def setUp(self):
+        super().setUp()
+        from test_agent_alerts import RecordingNotifier
+
+        cfg = app.load_config()
+        cfg["notifications"] = {"cooldown_seconds": 0}
+        self.write_config(cfg)
+        self.notifier = RecordingNotifier()
+        self.old_notifier, app._notifier = app._notifier, self.notifier
+
+    def tearDown(self):
+        app._notifier = self.old_notifier
+        super().tearDown()
+
+    def esxi(self, status):
+        return [{"id": "esxi-1", "display_name": "ESXi-1", "type": "esxi", "status": status,
+                 "last_error": "timed out"}]
+
+    def test_never_pushed_stays_quiet(self):
+        app._alert_round()
+        self.assertEqual(self.notifier.sent, [])
+
+    def test_down_then_up_sends_alert_and_recovery(self):
+        self.push(self.esxi("down"))
+        app._alert_round()
+        self.push(self.esxi("ok"))
+        app._alert_round()
+        self.assertEqual(self.notifier.sent, [("2702 检测故障告警", "red"), ("2702 检测故障告警已恢复", "green")])
+
+    def test_silent_2702_does_not_fake_a_recovery(self):
+        self.push(self.esxi("down"))
+        app._alert_round()
+        received_at, body = metrics_store.get_status_push(app.STATUS_PUSH_SOURCE)
+        metrics_store.save_status_push(app.STATUS_PUSH_SOURCE, received_at - app.STATUS_PUSH_STALE_SECONDS - 5, body)
+        app._alert_round()
+        self.assertEqual(self.notifier.sent, [("2702 检测故障告警", "red"), ("2702 失联告警", "red")])
+        # 2702 comes back with ESXi still down: only the silence recovers.
+        self.push(self.esxi("down"))
+        app._alert_round()
+        self.assertEqual(self.notifier.sent[-1], ("2702 失联告警已恢复", "green"))
+        self.assertEqual(len(self.notifier.sent), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

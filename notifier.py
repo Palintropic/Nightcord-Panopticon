@@ -90,6 +90,11 @@ class Notifier:
             self._send_feishu(recovery, template="green", mention_all=False)
             self._send_email(recovery)
 
+    def active_keys_with_prefix(self, prefix: str):
+        """未解决的告警里 key 以 prefix 开头的那些，数据源暂时看不见时用来"保持原状、不算恢复"。"""
+        with self._lock:
+            return [k for k in self._active if k.startswith(prefix)]
+
     def active_keys_for(self, panel: str):
         """
         某台青源机器名下未解决的告警 key。按告警牵涉的青源机器（panels）认，不看显示名：
@@ -267,12 +272,32 @@ def evaluate_alerts(panel_result: dict, thresholds: dict):
         }
 
     if panel_result.get("online") is False:
-        alerts.append(make(
-            "offline",
-            "面板离线告警",
-            f"面板【{name}】({panel_result.get('url')}) 连接失败：{panel_result.get('error')}",
-        ))
+        if panel_result.get("kind") == "nightcord-status" and not panel_result.get("url"):
+            # 推送模式：没有地址可连，是 2702 那边不推了。从没收到过推送（刚切到推送模式、
+            # 2702 还没接上）只在卡片上显示，不当失联告警
+            if panel_result.get("seen_at") is not None:
+                alerts.append(make("offline", "2702 失联告警", f"【{name}】{panel_result.get('error')}"))
+        else:
+            alerts.append(make(
+                "offline",
+                "面板离线告警",
+                f"面板【{name}】({panel_result.get('url')}) 连接失败：{panel_result.get('error')}",
+            ))
         return alerts  # 离线时其它指标无意义，直接返回
+
+    if panel_result.get("kind") == "nightcord-status":
+        # 2702 判定为故障的目标逐个告警。qingyuan 目标的离线由 plan_agent_alerts 报，
+        # panopticon 目标是 2702 在看 Panopticon 自己，这两类这里都不重复报
+        for target in panel_result.get("targets") or []:
+            if target.get("status") != "down" or target.get("type") in ("qingyuan", "panopticon"):
+                continue
+            label = target.get("display_name") or target.get("id")
+            alerts.append(make(
+                f"target-{target.get('id')}",  # 前缀见 nightcord_target_key_prefix
+                "2702 检测故障告警",
+                f"【{label}】故障：{target.get('last_error') or '检测失败'}",
+            ))
+        return alerts
 
     sys = panel_result.get("system") or {}
     net = panel_result.get("network") or {}
@@ -303,6 +328,11 @@ def evaluate_alerts(panel_result: dict, thresholds: dict):
                     f"挂载目录【{path}】的磁盘已使用容量为{disk_pct}%，大于告警值{thresholds.get('disk',85)}%",
                 ))
     return alerts
+
+
+def nightcord_target_key_prefix(name: str) -> str:
+    """evaluate_alerts 给 Nightcord-Status 单个目标出的告警 key 的公共前缀。"""
+    return alert_key("bt", name, "target-")
 
 
 def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
