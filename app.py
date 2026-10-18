@@ -653,16 +653,33 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+# 设置已经并进看板：设置列表是 /#p=5，各页是 /#s=<页名>。/setup 和 /settings 留着转过去，
+# 旧书签和文档里的地址照样能用。旧地址可能带着 #s=notify 这种页名，# 后面的部分浏览器不发给
+# 服务器，HTTP 跳转也会被 Location 里的 # 盖掉，所以回一小段脚本在浏览器里转：认识的页名照旧
+# 打开（以前的「外观」现在叫 theme），其它一律去设置列表，首次配置的提示也在那里。
+_SETTINGS_FORWARD = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>设置 · Panopticon</title>
+<script>
+(function(){
+  var pages = {appearance:'theme', theme:'theme', kaomoji:'kaomoji', notify:'notify', agents:'agents',
+               deploy:'deploy', login:'login', panels:'panels'};
+  var m = location.hash.match(/^#s=(\\w+)$/);
+  var key = m && Object.prototype.hasOwnProperty.call(pages, m[1]) ? pages[m[1]] : null;
+  location.replace('/' + (key ? '#s=' + key : '#p=5'));
+})();
+</script></head>
+<body><a href="/#p=5">打开设置</a></body></html>
+"""
+
+
 @app.route("/setup")
 def setup_page():
-    # 设置已经并进看板，是顶部的「设置」一页（#p=5）。/setup 和 /settings 留着跳过去，
-    # 旧书签和文档里的地址照样能用；首次配置的提示也在那一页。
-    return redirect("/#p=5")
+    return Response(_SETTINGS_FORWARD, mimetype="text/html")
 
 
 @app.route("/settings")
 def settings_page():
-    return redirect("/#p=5")
+    return Response(_SETTINGS_FORWARD, mimetype="text/html")
 
 
 @app.route("/api/config", methods=["GET"])

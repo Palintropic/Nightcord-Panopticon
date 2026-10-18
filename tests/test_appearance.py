@@ -1,4 +1,7 @@
+import json
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 
@@ -94,11 +97,27 @@ class AppearanceApiTests(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertEqual(self.client.get("/api/kaomoji").get_json(), body)
 
-    def test_old_settings_address_lands_on_the_settings_pivot(self):
+    def test_old_settings_addresses_forward_in_the_browser(self):
         for path in ("/settings", "/setup"):
             r = self.client.get(path)
-            self.assertEqual(r.status_code, 302)
-            self.assertTrue(r.headers["Location"].endswith("/#p=5"))
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("location.replace(", r.get_data(as_text=True))
+
+    @unittest.skipUnless(shutil.which("node"), "needs node to run the forwarding script")
+    def test_old_bookmarks_keep_their_page(self):
+        # The page name after # never reaches the server, so the forward happens in the browser.
+        html = self.client.get("/settings").get_data(as_text=True)
+        script = html.split("<script>")[1].split("</script>")[0]
+        runner = ("const script = require('fs').readFileSync(0, 'utf8'); const out = {};"
+                  "for(const hash of ['', '#s=notify', '#s=appearance', '#s=panels', '#s=constructor', '#s=bogus', '#x']){"
+                  "  const location = {hash, replace(u){ out[hash] = u; }};"
+                  "  new Function('location', script)(location);"
+                  "} console.log(JSON.stringify(out));")
+        result = subprocess.run(["node", "-e", runner], input=script, capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(json.loads(result.stdout), {
+            "": "/#p=5", "#s=notify": "/#s=notify", "#s=appearance": "/#s=theme", "#s=panels": "/#s=panels",
+            "#s=constructor": "/#p=5", "#s=bogus": "/#p=5", "#x": "/#p=5",
+        })
 
 
 if __name__ == "__main__":

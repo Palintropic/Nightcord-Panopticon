@@ -488,7 +488,8 @@ const SETTINGS_PAGES = [
 // #p=<n> top-level pivot item, #m=<name> machine detail, #s=<key> settings page.
 function route(){
   const s = location.hash.match(/^#s=(\w+)$/);
-  if(s && SETTINGS_PAGES.some(x => x.key === s[1])) return {view:'settings', page:s[1]};
+  const key = s && (s[1] === 'appearance' ? 'theme' : s[1]);   // 外观 became 主题
+  if(key && SETTINGS_PAGES.some(x => x.key === key)) return {view:'settings', page:key};
   const m = location.hash.match(/^#m=(.*)$/);
   if(m){
     try{ return {view:'detail', name:decodeURIComponent(m[1])}; }
@@ -540,6 +541,14 @@ function render(animate){
     });
     if(animate) settingsView.scrollTop = 0;
     if(window.panopticonSettings) window.panopticonSettings.open(r.page, animate);
+    renderStatusBar();
+    return;
+  }
+  // Background redraws of 总览 replace only the rows, so the metric ComboBox is never rebuilt
+  // under someone who has it open.
+  const rows = !animate && r.view === 'list' && r.pivot === 0 && !noData() ? document.getElementById('ovRows') : null;
+  if(rows){
+    rows.innerHTML = overviewRows();
     renderStatusBar();
     return;
   }
@@ -646,12 +655,15 @@ function overviewRank(p){
 function overview(){
   const empty = noData();
   if(empty) return empty;
-  const ps = panels().map((p, i) => [p, i])
-    .sort((a, b) => overviewRank(a[0]) - overviewRank(b[0]) || a[1] - b[1]).map(x => x[0]);
   const options = OVERVIEW_METRICS.map(o =>
     `<option value="${o.key}"${o.key === overviewMetric ? ' selected' : ''}>${o.label}</option>`).join('');
   return `<div class="ov-switch"><select id="overviewMetric" aria-label="曲线显示">${options}</select></div>
-    ${ps.map(p => `<div class="ov-row">${tile(p)}${trend(p)}</div>`).join('')}`;
+    <div id="ovRows">${overviewRows()}</div>`;
+}
+function overviewRows(){
+  const ps = panels().map((p, i) => [p, i])
+    .sort((a, b) => overviewRank(a[0]) - overviewRank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  return ps.map(p => `<div class="ov-row">${tile(p)}${trend(p)}</div>`).join('');
 }
 
 function stateText(p){
@@ -783,10 +795,34 @@ function characterFor(name){
   const custom = own(kaomojiConfig.faces, chara) ? kaomojiConfig.faces[chara] : [];
   return [chara, faces.map((f, i) => custom[i] || f)];
 }
+// The server-side sections (颜文字 here, colours below) load once at start. Saving sends a whole
+// section, so until the saved copy is in, the settings pages keep their controls disabled: an
+// early save would overwrite it with defaults. A page opened before then is redrawn on arrival.
+let kaomojiLoaded = false;
+function loadKaomoji(){
+  return fetchJsonWithTimeout('/api/kaomoji', 10000)
+    .then(r => { if(r.ok) setKaomojiConfig(r.data); return r.ok; }).catch(() => false);
+}
 function setKaomojiConfig(k){
+  const first = !kaomojiLoaded;
+  kaomojiLoaded = true;
   kaomojiConfig = {assign:(k && k.assign) || {}, faces:(k && k.faces) || {}};
   const r = route();
   if(r.view === 'list' && r.pivot === 0) render(false);
+  if(first && r.view === 'settings' && r.page === 'kaomoji' && window.panopticonSettings) window.panopticonSettings.open('kaomoji', true);
+}
+let appearanceLoaded = false;
+// theme.js already painted the cached copy; this brings the saved one.
+function loadAppearance(){
+  return fetchJsonWithTimeout('/api/appearance', 10000).then(r => {
+    if(!r.ok || !window.panopticonTheme) return false;
+    window.panopticonTheme.setAccents(r.data);
+    const first = !appearanceLoaded;
+    appearanceLoaded = true;
+    const now = route();
+    if(first && now.view === 'settings' && now.page === 'theme' && window.panopticonSettings) window.panopticonSettings.open('theme', true);
+    return true;
+  }).catch(() => false);
 }
 
 function tile(p){
@@ -1092,11 +1128,8 @@ document.getElementById('logout').addEventListener('click', async () => {
   location.href = '/login';
 });
 
-fetchJsonWithTimeout('/api/kaomoji', 10000).then(r => { if(r.ok) setKaomojiConfig(r.data); }).catch(() => {});
-// Surface colours are saved on the server; theme.js already painted the cached copy.
-fetchJsonWithTimeout('/api/appearance', 10000).then(r => {
-  if(r.ok && window.panopticonTheme) window.panopticonTheme.setAccents(r.data);
-}).catch(() => {});
+loadKaomoji();
+loadAppearance();
 
 render(false);
 refresh(true);

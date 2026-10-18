@@ -17,11 +17,22 @@ const settings = window.panopticonSettings = {
   open(page, fresh){
     const first = !settings.loaded;
     settings.ensureLoaded();
-    if(page === 'theme') renderAccents();
-    if(page === 'kaomoji') renderKaomoji(fresh);
+    if(page === 'theme'){
+      renderAccents(fresh);
+      if(fresh && !appearanceLoaded) loadAppearance().then(ok => { if(!ok) loadFailed('accentMsg'); });
+    }
+    if(page === 'kaomoji'){
+      renderKaomoji(fresh);
+      if(fresh && !kaomojiLoaded) loadKaomoji().then(ok => { if(!ok) loadFailed('kaomojiMsg'); });
+    }
     if(page === 'agents' && fresh && !first) loadAgentList();
   },
 };
+
+function loadFailed(msgId){
+  const msg = document.getElementById(msgId);
+  msg.className = 'err'; msg.textContent = '读取服务器上的设置失败，刷新页面再试';
+}
 
 // ---------- 主题 ----------
 // Mode applies on selection, like Windows 10 Settings; stored per browser by /static/theme.js.
@@ -74,31 +85,40 @@ function currentAccents(){
   return out;
 }
 
-function renderAccents(){
+// Background redraws (force false) leave a custom field alone while it is focused or holds an
+// unapplied value; a pick that saves (force true) rewrites all three.
+function renderAccents(force){
   const a = currentAccents();
   const fg = window.panopticonTheme.foreground;
+  // Until the saved colours arrive (appearanceLoaded, index.html) nothing here can save.
+  const off = appearanceLoaded ? '' : ' disabled';
+  const msg = document.getElementById('accentMsg');
+  if(!appearanceLoaded && !msg.textContent){ msg.className = 'caption'; msg.textContent = '正在读取服务器上的配色…'; }
+  if(appearanceLoaded && msg.textContent === '正在读取服务器上的配色…') msg.textContent = '';
   document.getElementById('accentPresets').innerHTML = ACCENT_PRESETS.map((pr, i) =>
-    `<button class="preset" data-preset="${i}"><span class="chips">${ACCENT_PARTS.map(k =>
+    `<button class="preset" data-preset="${i}"${off}><span class="chips">${ACCENT_PARTS.map(k =>
       `<i style="background:${pr[k]}"></i>`).join('')}</span><span>${escapeHtml(pr.name)}</span></button>`).join('');
   ACCENT_PARTS.forEach(k => {
     document.querySelector(`.swatches[data-accent="${k}"]`).innerHTML = ACCENT_SWATCHES.map(c =>
       `<button class="swatch" role="radio" aria-checked="${c === a[k]}" aria-label="${c}" title="${c}"
-        data-part="${k}" data-colour="${c}" style="background:${c};color:${fg(c)}"></button>`).join('');
+        data-part="${k}" data-colour="${c}" style="background:${c};color:${fg(c)}"${off}></button>`).join('');
     const custom = document.querySelector(`[data-accent-custom="${k}"]`);
-    if(!custom.contains(document.activeElement)){
+    const input = custom.querySelector('input');
+    if(force || !(custom.contains(document.activeElement) || (input && input.dataset.dirty))){
       custom.innerHTML = `<span class="chip" style="background:${a[k]}"></span>
-        <input type="text" value="${a[k]}" aria-label="自定义颜色" maxlength="7" spellcheck="false">
-        <button class="btn" data-custom-apply="${k}">应用</button>`;
+        <input type="text" value="${a[k]}" aria-label="自定义颜色" maxlength="7" spellcheck="false"${off}>
+        <button class="btn" data-custom-apply="${k}"${off}>应用</button>`;
     }
   });
 }
 
 let accentSave = 0;
 async function saveAccents(next){
+  if(!appearanceLoaded) return;
   const msg = document.getElementById('accentMsg');
   const colours = {...currentAccents(), ...next};
   window.panopticonTheme.setAccents(colours);   // shows at once; the server copy follows
-  renderAccents();
+  renderAccents(true);
   const seq = ++accentSave;
   msg.className = 'caption'; msg.textContent = '保存中…';
   try{
@@ -128,6 +148,9 @@ document.getElementById('settingsView').addEventListener('click', e => {
   const ap = e.target.closest('[data-custom-apply]');
   if(ap) applyCustom(ap.dataset.customApply);
 });
+document.getElementById('settingsView').addEventListener('input', e => {
+  if(e.target.closest('[data-accent-custom]')) e.target.dataset.dirty = '1';
+});
 document.getElementById('settingsView').addEventListener('keydown', e => {
   const wrap = e.target.closest('[data-accent-custom]');
   if(wrap && e.key === 'Enter') applyCustom(wrap.dataset.accentCustom);
@@ -148,6 +171,17 @@ function applyCustom(part){
 // The character table (CHARACTERS) and the saved choices (kaomojiConfig) live in index.html,
 // which draws the tiles. Picking a character saves at once; typed faces wait for 保存.
 function renderKaomoji(fresh){
+  // Until the saved choices arrive (kaomojiLoaded, index.html) there is nothing to edit: an empty
+  // form saved now would wipe them.
+  document.getElementById('kaomojiSave').disabled = !kaomojiLoaded;
+  document.getElementById('kaomojiReset').disabled = !kaomojiLoaded;
+  if(!kaomojiLoaded){
+    document.getElementById('kaomojiAssign').innerHTML = '<div class="empty-hint">读取中…</div>';
+    document.getElementById('kaomojiFaces').innerHTML = '<div class="empty-hint">读取中…</div>';
+    return;
+  }
+  const msg = document.getElementById('kaomojiMsg');
+  if(msg.className === 'err' && msg.textContent.startsWith('读取')) msg.textContent = '';
   const assign = kaomojiConfig.assign;
   const machines = panels().map(p => p.name).filter(Boolean);
   const options = name => {
@@ -162,7 +196,7 @@ function renderKaomoji(fresh){
       : '<div class="empty-hint">还没有机器。</div>';
   }
   // The face fields are only rebuilt when the page is opened, so a refresh never eats typing.
-  if(!fresh && document.getElementById('kaomojiFaces').children.length) return;
+  if(!fresh && document.querySelector('#kaomojiFaces .face-row')) return;
   document.getElementById('kaomojiFaces').innerHTML = CHARACTERS.map(([c, defaults]) => {
     const custom = own(kaomojiConfig.faces, c) ? kaomojiConfig.faces[c] : [];
     return `<div class="face-row" data-chara="${escapeAttr(c)}"><span class="who">${escapeHtml(c)}</span>${defaults.map((d, i) =>
@@ -180,7 +214,16 @@ function collectFaces(){
   return faces;
 }
 
+// After a failed save: drop any optimistic pick and show what the server really holds.
+function resyncKaomoji(){
+  loadKaomoji().then(() => {
+    if(document.activeElement && document.activeElement.closest('#kaomojiAssign')) document.activeElement.blur();
+    renderKaomoji(false);
+  });
+}
+
 async function saveKaomoji(next){
+  if(!kaomojiLoaded) return false;
   const msg = document.getElementById('kaomojiMsg');
   msg.className = 'caption'; msg.textContent = '保存中…';
   try{
@@ -189,6 +232,7 @@ async function saveKaomoji(next){
     const data = await res.json().catch(() => ({}));
     if(!res.ok){
       msg.className = 'err'; msg.textContent = '没保存上：' + (data.errors || [data.error || `HTTP ${res.status}`]).join('；');
+      resyncKaomoji();
       return false;
     }
     setKaomojiConfig(data);
@@ -196,16 +240,19 @@ async function saveKaomoji(next){
     return true;
   }catch(e){
     msg.className = 'err'; msg.textContent = '没保存上：' + e;
+    resyncKaomoji();
     return false;
   }
 }
 
 document.getElementById('kaomojiAssign').addEventListener('change', e => {
   const sel = e.target.closest('[data-assign]');
-  if(!sel) return;
+  if(!sel || !kaomojiLoaded) return;
   const assign = {...kaomojiConfig.assign};
   if(sel.value) assign[sel.dataset.assign] = sel.value; else delete assign[sel.dataset.assign];
-  // Only the pick is sent; face fields not yet saved stay as typed.
+  // Recorded at once, so a second pick made before this one is answered builds on it. Only the
+  // picks are sent; face fields not yet saved stay as typed.
+  kaomojiConfig = {...kaomojiConfig, assign};
   saveKaomoji({assign, faces:kaomojiConfig.faces});
 });
 document.getElementById('kaomojiSave').addEventListener('click', () => saveKaomoji({faces:collectFaces()}));
