@@ -18,16 +18,21 @@ const settings = window.panopticonSettings = {
     const first = !settings.loaded;
     settings.ensureLoaded();
     if(page === 'theme'){
-      renderAccents(fresh);
-      if(fresh && !appearanceLoaded) loadAppearance().then(ok => { if(!ok) loadFailed('accentMsg'); });
+      renderAccents(fresh && !accentResyncing);
+      if(accentResyncing) resyncAccents();
+      else if(fresh && !appearanceLoaded) loadAppearance().then(ok => { if(!ok) loadFailed('accentMsg'); });
     }
     if(page === 'kaomoji'){
-      renderKaomoji(fresh);
-      if(fresh && !kaomojiLoaded) loadKaomoji().then(ok => { if(!ok) loadFailed('kaomojiMsg'); });
+      renderKaomoji(fresh && !kaomojiResyncing);
+      if(kaomojiResyncing) resyncKaomoji();
+      else if(fresh && !kaomojiLoaded) loadKaomoji().then(ok => { if(!ok) loadFailed('kaomojiMsg'); });
     }
     if(page === 'agents' && fresh && !first) loadAgentList();
   },
 };
+
+const RESYNC_FAILED = '没保存上，也没能读回服务器上的设置；过一会儿自动重试，没保存的内容先留着';
+const RESYNC_DONE = '已经读回服务器上的设置，没保存的内容还在，可以再保存一次';
 
 function loadFailed(msgId){
   const msg = document.getElementById(msgId);
@@ -150,8 +155,27 @@ function setMsg(id, cls, text){
   msg.className = cls; msg.textContent = text;
 }
 
-// While a failed save is being replaced by the server's copy, the page takes no new picks.
+// After a failed save the page takes no new picks until the server's copy is back. A failed
+// reload keeps it that way and is retried on every background redraw (open() below); a typed
+// custom colour is kept throughout.
 let accentResyncing = false;
+let accentReload = null;
+function resyncAccents(){
+  accentResyncing = true;
+  renderAccents(false);
+  if(accentReload) return accentReload;
+  accentReload = loadAppearance().then(ok => {
+    accentReload = null;
+    if(ok){
+      accentResyncing = false;
+      if(document.getElementById('accentMsg').textContent === RESYNC_FAILED) setMsg('accentMsg', 'caption', RESYNC_DONE);
+    } else {
+      setMsg('accentMsg', 'err', RESYNC_FAILED);
+    }
+    renderAccents(false);
+  });
+  return accentReload;
+}
 const accentQueue = makeSaveQueue();
 function saveAccents(next){
   if(!appearanceLoaded || accentResyncing) return;
@@ -164,13 +188,7 @@ function saveAccents(next){
       // Show what the server really holds instead of the colours that did not save; the queue
       // waits for this before anything else goes out.
       accentQueue.dropQueued();
-      accentResyncing = true;
-      renderAccents(true);
-      return loadAppearance().then(ok => {
-        accentResyncing = false;
-        if(!ok){ appearanceLoaded = false; loadFailed('accentMsg'); }   // retried when the page reopens
-        renderAccents(true);
-      });
+      return resyncAccents();
     }
     if(last && document.getElementById('accentMsg').className !== 'err') setMsg('accentMsg', 'caption', '已保存 ✓');
   });
@@ -256,16 +274,25 @@ function collectFaces(){
 
 // After a failed save: drop any optimistic change and show what the server really holds. Until
 // then the pickers and buttons are disabled; typed faces stay as typed so they can be saved again.
+// A failed reload keeps it that way and is retried on every background redraw (open() below).
 let kaomojiResyncing = false;
+let kaomojiReload = null;
 function resyncKaomoji(){
   kaomojiResyncing = true;
   if(document.activeElement && document.activeElement.closest('#kaomojiAssign')) document.activeElement.blur();
   renderKaomoji(false);
-  return loadKaomoji().then(ok => {
-    kaomojiResyncing = false;
-    if(!ok){ kaomojiLoaded = false; loadFailed('kaomojiMsg'); }   // retried when the page reopens
+  if(kaomojiReload) return kaomojiReload;
+  kaomojiReload = loadKaomoji().then(ok => {
+    kaomojiReload = null;
+    if(ok){
+      kaomojiResyncing = false;
+      if(document.getElementById('kaomojiMsg').textContent === RESYNC_FAILED) setMsg('kaomojiMsg', 'caption', RESYNC_DONE);
+    } else {
+      setMsg('kaomojiMsg', 'err', RESYNC_FAILED);
+    }
     renderKaomoji(false);
   });
+  return kaomojiReload;
 }
 
 // The change is recorded at once, so a save made before this one is answered builds on it; the
