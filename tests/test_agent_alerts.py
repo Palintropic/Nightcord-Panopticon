@@ -246,5 +246,42 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(alerts[0]["panels"], ["tokyo", "shanghai"])
 
 
+class NightcordStatusAlertTests(unittest.TestCase):
+    TH = {"cpu": 90, "mem": 90, "disk": 85}
+
+    def card(self, targets, **overrides):
+        card = {"name": "Nightcord-Status", "url": None, "online": True, "error": None,
+                "kind": "nightcord-status", "targets": targets}
+        card.update(overrides)
+        return card
+
+    def test_each_down_target_alerts_once(self):
+        alerts = evaluate_alerts(self.card([
+            {"id": "esxi-1", "display_name": "ESXi-1", "type": "esxi", "status": "down",
+             "last_error": "timed out"},
+            {"id": "claude", "display_name": "Claude", "type": "statuspage", "status": "degraded"},
+            {"id": "freepbx-self", "display_name": "FreePBX", "type": "tcp", "status": "ok"},
+        ]), self.TH)
+        self.assertEqual([a["key"] for a in alerts], [alert_key("bt", "Nightcord-Status", "target-esxi-1")])
+        self.assertIn("timed out", alerts[0]["content"])
+
+    def test_qingyuan_and_panopticon_targets_are_left_to_panopticon(self):
+        alerts = evaluate_alerts(self.card([
+            {"id": "cloud-japan", "type": "qingyuan", "status": "down"},
+            {"id": "panopticon", "type": "panopticon", "status": "down"},
+        ]), self.TH)
+        self.assertEqual(alerts, [])
+
+    def test_silent_2702_is_its_own_alert(self):
+        alerts = evaluate_alerts(self.card([], online=False, seen_at=1000,
+                                           error="2702 超过 3 分钟没有推送"), self.TH)
+        self.assertEqual(alerts[0]["alert_type"], "2702 失联告警")
+        self.assertNotIn("None", alerts[0]["content"])
+
+    def test_never_pushed_is_not_an_alert(self):
+        card = self.card([], online=False, seen_at=None, error="还没收到过 2702 的推送")
+        self.assertEqual(evaluate_alerts(card, self.TH), [])
+
+
 if __name__ == "__main__":
     unittest.main()

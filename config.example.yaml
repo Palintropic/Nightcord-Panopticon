@@ -17,12 +17,19 @@ panels:
 
   # 可继续添加更多面板...
 
-# Nightcord-Status（自建监控服务，xml_status_service.py，端口 8702）接入，跟宝塔面板并列展示成一张独立卡片。
-# 目前该接口无鉴权，只信任 WireGuard 网段，url 填它在 WireGuard 网格里的内网地址。
+# Nightcord-Status（2702，自建监控服务）接入，跟宝塔面板并列展示成一张独立卡片。
+# 它判定为故障的目标（ESXi、TCP、第三方 statuspage 等）会走下面的告警通知逐个报，恢复了发恢复通知。
+# 两种接法：
+#   source: push —— 推荐。2702 每轮采集完 POST 到 /api/status/report，请求头 X-Metrics-Secret
+#                   填 metrics_agent.shared_secret。2702 主动连过来，它那边的防火墙不用开口子；
+#                   超过 3 分钟没推送会单独报一条"2702 失联告警"。url 不用填。
+#   source: pull —— 默认。Panopticon 去拉 2702 的 /api/status.json（xml_status_service.py，端口 8702）。
+#                   该接口无鉴权，只信任 WireGuard 网段，url 填它在 WireGuard 网格里的内网地址。
 nightcord_status:
   enabled: false
   name: "Nightcord-Status"
-  url: "http://10.10.0.4:8702"      # FreePBX（跑 xml_status_service.py 的机器）的 WireGuard 内网地址
+  source: pull
+  url: "http://10.10.0.4:8702"      # 仅 pull：FreePBX（跑 xml_status_service.py 的机器）的 WireGuard 内网地址
   verify_ssl: false
 
 # Dashboard 自身的登录保护（Panopticon 打算长期暴露公网时务必开启）

@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS agent_retired (
   panel TEXT PRIMARY KEY,
   retired_at INTEGER NOT NULL
 );
+
+-- Nightcord-Status（2702）推过来的最新一份目标状态，一个来源一行，只留最新。
+-- received_at 是 Panopticon 收到时的服务器时间，判断 2702 有没有失联用。
+CREATE TABLE IF NOT EXISTS status_push (
+  source TEXT PRIMARY KEY,
+  received_at INTEGER NOT NULL,
+  body_json TEXT NOT NULL
+);
 """
 
 
@@ -240,3 +248,25 @@ def prune_older_than(cutoff_ts):
     with _connect() as conn:
         cur = conn.execute("DELETE FROM metrics WHERE ts < ?", (cutoff_ts,))
         return cur.rowcount
+
+
+def save_status_push(source, received_at, body):
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO status_push (source, received_at, body_json) VALUES (?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET received_at=excluded.received_at, body_json=excluded.body_json
+            """,
+            (source, int(received_at), json.dumps(body, ensure_ascii=False)),
+        )
+
+
+def get_status_push(source):
+    """返回 (received_at, body)，还没收到过就返回 None。"""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT received_at, body_json FROM status_push WHERE source = ?", (source,)
+        ).fetchone()
+    if row is None:
+        return None
+    return row["received_at"], json.loads(row["body_json"])

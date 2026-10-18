@@ -22,7 +22,7 @@ from werkzeug.security import check_password_hash
 import webauthn_manager as wam
 from bt_client import BTClient
 from nightcord_status_client import NightcordStatusClient
-from notifier import Notifier, evaluate_alerts, plan_agent_alerts
+from notifier import Notifier, evaluate_alerts, nightcord_target_key_prefix, plan_agent_alerts
 from auth import BruteForceGuard, get_client_ip
 from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance, kaomoji_of, clean_kaomoji
 from agent_deploy import deploy_agent, AgentDeployError
@@ -66,6 +66,10 @@ AGENT_STALE_SECONDS = 180  # 秒，青源 agent 超过这么久没上报就不�
 METRICS_PRUNE_INTERVAL = 3600  # 秒，自建监控 agent 历史数据的清理巡检间隔
 METRICS_REPORT_PATH = "/api/metrics/report"
 AGENT_HEARTBEAT_PATH = "/api/agents/heartbeat"
+STATUS_REPORT_PATH = "/api/status/report"
+STATUS_PUSH_STALE_SECONDS = 180  # 2702 每 60s 推一次，超过 3 轮没推就当它失联
+STATUS_PUSH_SOURCE = "nightcord-status"
+STATUS_VALUES = ("ok", "degraded", "down", "unknown")
 QINGYUAN_VERSION = "7.17-beta"  # 青源（自建系统指标监控架构）版本号，见 QINGYUAN.zh-CN.md
 
 
@@ -122,6 +126,8 @@ def enforce_auth():
         return  # agent 机器对机器上报，鉴权走独立的共享密钥（见 api_metrics_report），不走登录态鉴权
     if request.path == AGENT_HEARTBEAT_PATH:
         return  # 2702 机器对机器拉取，鉴权走 status_api.token（见 api_agent_heartbeat）
+    if request.path == STATUS_REPORT_PATH:
+        return  # 2702 机器对机器推送，鉴权走 metrics_agent.shared_secret（见 api_status_report）
     try:
         cfg = load_config()
     except RuntimeError:
@@ -322,7 +328,45 @@ def fetch_all():
 def _with_qingyuan(remote):
     results = copy.deepcopy(remote)  # _merge_qingyuan 会往卡片上挂数据，不能改到缓存本身
     _merge_qingyuan(results)
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
+    push_card = _nightcord_push_card(cfg, time.time())
+    if push_card is not None:
+        results.append(push_card)
     return results
+
+
+def _nightcord_push_mode(cfg):
+    ns_cfg = cfg.get("nightcord_status") or {}
+    return bool(ns_cfg.get("enabled")) and ns_cfg.get("source") == "push"
+
+
+def _nightcord_push_card(cfg, now):
+    """
+    推送模式下 Nightcord-Status 的卡片，跟青源数据一样现读（存在 SQLite 里，多个 worker 共用），
+    不进远程缓存。形状跟拉取模式的 NightcordStatusClient.collect_all() 一致，前端和告警都不用分两套。
+    """
+    if not _nightcord_push_mode(cfg):
+        return None
+    name = (cfg.get("nightcord_status") or {}).get("name", "Nightcord-Status")
+    card = {"name": name, "url": None, "online": True, "error": None,
+            "kind": "nightcord-status", "targets": [], "seen_at": None}
+    pushed = metrics_store.get_status_push(STATUS_PUSH_SOURCE)
+    if pushed is None:
+        card.update(online=False, error="还没收到过 2702 的推送")
+        return card
+    received_at, body = pushed
+    card["seen_at"] = received_at
+    if now - received_at > STATUS_PUSH_STALE_SECONDS:
+        card.update(online=False, error=(
+            f"2702 超过 {STATUS_PUSH_STALE_SECONDS // 60} 分钟没有推送，最后一次在 "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(received_at))}"
+        ))
+        return card
+    card["targets"] = body.get("targets", [])
+    return card
 
 
 def _remote_fingerprint(cfg=None):
@@ -405,7 +449,7 @@ def fetch_remote(cfg):
     results.sort(key=lambda r: order.get(r.get("name"), 999))
 
     ns_cfg = cfg.get("nightcord_status") or {}
-    if ns_cfg.get("enabled"):
+    if ns_cfg.get("enabled") and not _nightcord_push_mode(cfg):
         try:
             ns_result = NightcordStatusClient(
                 ns_cfg.get("name", "Nightcord-Status"),
@@ -524,7 +568,9 @@ def api_status():
         cfg = load_config()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
-    has_remote = bool(cfg.get("panels")) or bool((cfg.get("nightcord_status") or {}).get("enabled"))
+    has_remote = bool(cfg.get("panels")) or (
+        bool((cfg.get("nightcord_status") or {}).get("enabled")) and not _nightcord_push_mode(cfg)
+    )
     now = time.time()
     with _remote_lock:
         remote, remote_ts, remote_fp = _remote["data"], _remote["ts"], _remote["fp"]
@@ -629,6 +675,51 @@ def api_agent_heartbeat():
         for s in _agent_states(now)
     ]
     return jsonify({"now": int(now), "stale_seconds": AGENT_STALE_SECONDS, "agents": agents})
+
+
+def _clean_pushed_target(item):
+    if not isinstance(item, dict) or not item.get("id"):
+        return None
+    status = item.get("status")
+    last_error = item.get("last_error")
+    detail = item.get("detail")
+    return {
+        "id": str(item["id"]),
+        "display_name": str(item.get("display_name") or item["id"]),
+        "type": str(item.get("type") or ""),
+        "status": status if status in STATUS_VALUES else "unknown",
+        "last_error": str(last_error) if last_error else None,
+        "detail": detail if isinstance(detail, dict) else {},
+    }
+
+
+@app.route(STATUS_REPORT_PATH, methods=["POST"])
+def api_status_report():
+    """
+    2702（Nightcord-Status）每轮采集完把全部目标状态推过来，机器对机器调用。
+    FreePBX 主动连上海，家里防火墙不用为 Panopticon 开口子（拉取模式要连 FreePBX 的 8702）。
+    鉴权用 metrics_agent.shared_secret：这是写数据的入口，跟青源上报同一类；
+    status_api.token 只用于只读的心跳接口，不拿来写。
+    """
+    cfg = load_config()
+    if not _nightcord_push_mode(cfg):
+        return jsonify({"error": "nightcord_status 推送模式未启用"}), 404
+
+    expected = (cfg.get("metrics_agent") or {}).get("shared_secret", "")
+    got = request.headers.get("X-Metrics-Secret", "")
+    if not expected or not hmac.compare_digest(expected, got):
+        return jsonify({"error": "共享密钥不匹配"}), 401
+
+    body = request.get_json(silent=True) or {}
+    raw_targets = body.get("targets")
+    if not isinstance(raw_targets, list) or len(raw_targets) > 200:
+        return jsonify({"error": "targets 必须是列表（最多 200 个）"}), 400
+    targets = [t for t in (_clean_pushed_target(item) for item in raw_targets) if t]
+    metrics_store.save_status_push(STATUS_PUSH_SOURCE, time.time(), {
+        "last_updated": str(body.get("last_updated") or ""),
+        "targets": targets,
+    })
+    return jsonify({"ok": True, "targets": len(targets)})
 
 
 @app.route("/api/agents")
@@ -937,38 +1028,47 @@ def api_agent_delete_host(host_id):
     return jsonify({"ok": True})
 
 
+def _alert_round():
+    """一轮告警巡检：拉取所有面板数据、判断阈值、发送告警和恢复通知，并顺带刷新缓存。"""
+    cfg = load_config()
+    data = fetch_all()  # 也会刷新远程缓存
+
+    notif_cfg = cfg.get("notifications", {})
+    thresholds = notif_cfg.get("thresholds", {})
+    _notifier.update_config(notif_cfg)
+    active_keys = set()
+    for panel_result in data:
+        if panel_result.get("kind") == "qingyuan-only":
+            continue  # 只装了青源的机器由下面的 plan_agent_alerts 统一判断，这里再报就重复了
+        for alert in evaluate_alerts(panel_result, thresholds):
+            active_keys.add(alert["key"])
+            _notifier.notify(alert)
+        if panel_result.get("kind") == "nightcord-status" and panel_result.get("online") is False:
+            # 看不到 2702 的数据不等于它报过的故障都好了：保持原状，不发"已恢复"
+            active_keys.update(_notifier.active_keys_with_prefix(
+                nightcord_target_key_prefix(panel_result.get("name", ""))))
+
+    # 青源（自建 agent）上报的机器不一定跟宝塔面板重名，要单独判断：在线的按最新样本比阈值，
+    # 离线的报离线（全部同时离线时合并成一条）。卸载掉的机器在设置页"移除"后就不再盯。
+    now = time.time()
+    agent_alerts, keep_keys = plan_agent_alerts(
+        _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
+    )
+    active_keys |= keep_keys
+    # 期间有人点了"移除"也没关系：Notifier 在每次发送那一刻现查名单（见 Notifier.watch_generations）
+    for alert in agent_alerts:
+        active_keys.add(alert["key"])
+        _notifier.notify(alert)
+
+    # 这轮没再出现的 key 就是问题解决了，从"已通知"名单里摘掉，以后再犯还能收到通知
+    _notifier.resolve(active_keys)
+
+
 def background_alert_loop():
-    """后台巡检线程：定期拉取所有面板数据、判断阈值、发送告警，并顺带刷新缓存。"""
+    """后台巡检线程：每 ALERT_CHECK_INTERVAL 秒跑一轮 _alert_round。"""
     while True:
         try:
-            cfg = load_config()
-            data = fetch_all()  # 也会刷新远程缓存
-
-            notif_cfg = cfg.get("notifications", {})
-            thresholds = notif_cfg.get("thresholds", {})
-            _notifier.update_config(notif_cfg)
-            active_keys = set()
-            for panel_result in data:
-                if panel_result.get("kind") == "qingyuan-only":
-                    continue  # 只装了青源的机器由下面的 plan_agent_alerts 统一判断，这里再报就重复了
-                for alert in evaluate_alerts(panel_result, thresholds):
-                    active_keys.add(alert["key"])
-                    _notifier.notify(alert)
-
-            # 青源（自建 agent）上报的机器不一定跟宝塔面板重名，要单独判断：在线的按最新样本比阈值，
-            # 离线的报离线（全部同时离线时合并成一条）。卸载掉的机器在设置页"移除"后就不再盯。
-            now = time.time()
-            agent_alerts, keep_keys = plan_agent_alerts(
-                _agent_states(now), thresholds, now, AGENT_STALE_SECONDS, _notifier.active_keys_for,
-            )
-            active_keys |= keep_keys
-            # 期间有人点了"移除"也没关系：Notifier 在每次发送那一刻现查名单（见 Notifier.watch_generations）
-            for alert in agent_alerts:
-                active_keys.add(alert["key"])
-                _notifier.notify(alert)
-
-            # 这轮没再出现的 key 就是问题解决了，从"已通知"名单里摘掉，以后再犯还能收到通知
-            _notifier.resolve(active_keys)
+            _alert_round()
         except Exception as e:
             print(f"[background_alert_loop] 出错: {e}")
         time.sleep(ALERT_CHECK_INTERVAL)
