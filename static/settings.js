@@ -91,7 +91,8 @@ function currentAccents(){
 }
 
 // Background redraws (force false) leave a custom field alone while it is focused or holds an
-// unapplied value; a pick that saves (force true) rewrites all three.
+// unapplied value. force true rewrites all three (page opened, preset picked); a list of parts
+// rewrites only those (a swatch or custom colour for that part was picked).
 function renderAccents(force){
   const a = currentAccents();
   const fg = window.panopticonTheme.foreground;
@@ -109,10 +110,14 @@ function renderAccents(force){
         data-part="${k}" data-colour="${c}" style="background:${c};color:${fg(c)}"${off}></button>`).join('');
     const custom = document.querySelector(`[data-accent-custom="${k}"]`);
     const input = custom.querySelector('input');
-    if(force || !(custom.contains(document.activeElement) || (input && input.dataset.dirty))){
+    const rewrite = force === true || (Array.isArray(force) && force.includes(k));
+    if(rewrite || !(custom.contains(document.activeElement) || (input && input.dataset.dirty))){
       custom.innerHTML = `<span class="chip" style="background:${a[k]}"></span>
         <input type="text" value="${a[k]}" aria-label="自定义颜色" maxlength="7" spellcheck="false"${off}>
         <button class="btn" data-custom-apply="${k}"${off}>应用</button>`;
+    } else {
+      // Kept as typed, but it still follows the page's state (locked while loading or resyncing).
+      custom.querySelectorAll('input, button').forEach(el => { el.disabled = !!off; });
     }
   });
 }
@@ -180,7 +185,7 @@ const accentQueue = makeSaveQueue();
 function saveAccents(next){
   if(!appearanceLoaded || accentResyncing) return;
   window.panopticonTheme.setAccents({...currentAccents(), ...next});   // shows at once; the server copy follows
-  renderAccents(true);
+  renderAccents(Object.keys(next));
   setMsg('accentMsg', 'caption', '保存中…');
   accentQueue(() => postJson('/api/appearance', currentAccents()), (r, last) => {
     if(!r.ok){
