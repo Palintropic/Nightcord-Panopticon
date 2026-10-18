@@ -121,13 +121,13 @@ class AppearanceApiTests(unittest.TestCase):
         page = (ROOT / "static" / "login.html").read_text(encoding="utf-8")
         fn = re.search(r"function returnHash\(\)\{.*?\n\}", page, re.S).group(0)
         runner = ("const fn = require('fs').readFileSync(0, 'utf8'); const out = {};"
-                  "for(const hash of ['', '#s=notify', '#p=5', '#m=%E4%B8%8A%E6%B5%B7', '#x', '#s=a b', '#p=5#m=x']){"
+                  "for(const hash of ['', '#s=notify', '#p=5', '#m=%E4%B8%8A%E6%B5%B7', '#x', '#s=a b', '#p=5#m=x', '#m=a b', '#m=']){"
                   "  out[hash] = new Function('location', fn + '; return returnHash();')({hash});"
                   "} console.log(JSON.stringify(out));")
         result = subprocess.run(["node", "-e", runner], input=fn, capture_output=True, text=True, timeout=30, check=True)
         self.assertEqual(json.loads(result.stdout), {
             "": "", "#s=notify": "#s=notify", "#p=5": "#p=5", "#m=%E4%B8%8A%E6%B5%B7": "#m=%E4%B8%8A%E6%B5%B7",
-            "#x": "", "#s=a b": "", "#p=5#m=x": "",
+            "#x": "", "#s=a b": "", "#p=5#m=x": "", "#m=a b": "", "#m=": "",
         })
 
     @unittest.skipUnless(shutil.which("node"), "needs node to run the save queue")
@@ -147,6 +147,31 @@ class AppearanceApiTests(unittest.TestCase):
         result = subprocess.run(["node", "-e", runner], capture_output=True, text=True, timeout=30, check=True)
         self.assertEqual(json.loads(result.stdout),
                          {"sent": ["b", "b"], "done": [["first", False], ["second", True]], "ok": True})
+
+    @unittest.skipUnless(shutil.which("node"), "needs node to run the save queue")
+    def test_a_failed_save_drops_the_queue_and_holds_it_until_resynced(self):
+        # ena round 3: saves queued behind a failure were built on the failed change, and the
+        # resync must finish before anything else is sent.
+        src = (ROOT / "static" / "settings.js").read_text(encoding="utf-8")
+        fn = re.search(r"function makeSaveQueue\(\)\{.*?\n\}", src, re.S).group(0)
+        runner = fn + """
+        const queue = makeSaveQueue(); const log = [];
+        const send = (name, ok) => () => { log.push('send ' + name); return new Promise(r => setTimeout(() => r({ok}), 10)); };
+        queue(send('first', false), () => {
+          queue.dropQueued();
+          log.push('resync start');
+          // A save made during the resync is queued behind it.
+          queue(send('third', true), (r, last) => log.push('done third ' + last)).then(ok => {
+            log.push('third ' + ok); console.log(JSON.stringify(log));
+          });
+          return new Promise(r => setTimeout(() => { log.push('resync end'); r(); }, 30));
+        });
+        queue(send('second', true), () => log.push('done second')).then(ok => log.push('second ' + ok));
+        """
+        result = subprocess.run(["node", "-e", runner], capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(json.loads(result.stdout), [
+            "send first", "resync start", "resync end", "second false", "send third", "done third true", "third true",
+        ])
 
     @unittest.skipUnless(shutil.which("node"), "needs node to run the forwarding script")
     def test_old_bookmarks_keep_their_page(self):

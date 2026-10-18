@@ -67,7 +67,7 @@ function bufferToBase64url(buf){
 // Being sent here from a dashboard address keeps its #part (the browser carries it across the
 // redirect), so after signing in the same page opens. Only the dashboard's own forms pass.
 function returnHash(){
-  return /^#(p=\d+|s=\w+|m=[^#]*)$/.test(location.hash) ? location.hash : '';
+  return /^#(p=\d+|s=\w+|m=[^#\s]+)$/.test(location.hash) ? location.hash : '';
 }
 
 async function loginWithPassword(e){

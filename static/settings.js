@@ -91,7 +91,7 @@ function renderAccents(force){
   const a = currentAccents();
   const fg = window.panopticonTheme.foreground;
   // Until the saved colours arrive (appearanceLoaded, index.html) nothing here can save.
-  const off = appearanceLoaded ? '' : ' disabled';
+  const off = appearanceLoaded && !accentResyncing ? '' : ' disabled';
   const msg = document.getElementById('accentMsg');
   if(!appearanceLoaded && !msg.textContent){ msg.className = 'caption'; msg.textContent = '正在读取服务器上的配色…'; }
   if(appearanceLoaded && msg.textContent === '正在读取服务器上的配色…') msg.textContent = '';
@@ -114,16 +114,27 @@ function renderAccents(force){
 
 // Saves of one section go out one at a time, each carrying the section as it stands when it is
 // sent, so the last pick is what the server keeps however the network orders the replies.
-// send() resolves {ok, data, error}; done(result, last) runs after each, last = none queued behind.
+// send() resolves {ok, data, error}; done(result, last) runs after each, last = none queued behind,
+// and the next save waits for whatever done() returns (a resync after a failure). dropQueued()
+// cancels the saves still waiting: after a failure they were built on the change that failed.
 function makeSaveQueue(){
   let tail = Promise.resolve();
   let pending = 0;
-  return (send, done) => {
+  let generation = 0;
+  const queue = (send, done) => {
     pending++;
-    const run = tail.then(send).then(r => { pending--; done(r, pending === 0); return r.ok; });
+    const gen = generation;
+    const run = tail
+      .then(() => gen === generation ? send() : {ok:false, dropped:true})
+      .then(r => {
+        pending--;
+        return Promise.resolve(r.dropped ? null : done(r, pending === 0)).then(() => r.ok);
+      });
     tail = run.catch(() => {});
     return run;
   };
+  queue.dropQueued = () => { generation++; };
+  return queue;
 }
 async function postJson(url, body){
   try{
@@ -139,18 +150,27 @@ function setMsg(id, cls, text){
   msg.className = cls; msg.textContent = text;
 }
 
+// While a failed save is being replaced by the server's copy, the page takes no new picks.
+let accentResyncing = false;
 const accentQueue = makeSaveQueue();
 function saveAccents(next){
-  if(!appearanceLoaded) return;
+  if(!appearanceLoaded || accentResyncing) return;
   window.panopticonTheme.setAccents({...currentAccents(), ...next});   // shows at once; the server copy follows
   renderAccents(true);
   setMsg('accentMsg', 'caption', '保存中…');
   accentQueue(() => postJson('/api/appearance', currentAccents()), (r, last) => {
     if(!r.ok){
       setMsg('accentMsg', 'err', '没保存上：' + r.error);
-      // Show what the server really holds instead of the colours that did not save.
-      loadAppearance().then(() => renderAccents(true));
-      return;
+      // Show what the server really holds instead of the colours that did not save; the queue
+      // waits for this before anything else goes out.
+      accentQueue.dropQueued();
+      accentResyncing = true;
+      renderAccents(true);
+      return loadAppearance().then(ok => {
+        accentResyncing = false;
+        if(!ok){ appearanceLoaded = false; loadFailed('accentMsg'); }   // retried when the page reopens
+        renderAccents(true);
+      });
     }
     if(last && document.getElementById('accentMsg').className !== 'err') setMsg('accentMsg', 'caption', '已保存 ✓');
   });
@@ -193,8 +213,8 @@ function applyCustom(part){
 function renderKaomoji(fresh){
   // Until the saved choices arrive (kaomojiLoaded, index.html) there is nothing to edit: an empty
   // form saved now would wipe them.
-  document.getElementById('kaomojiSave').disabled = !kaomojiLoaded;
-  document.getElementById('kaomojiReset').disabled = !kaomojiLoaded;
+  document.getElementById('kaomojiSave').disabled = !kaomojiLoaded || kaomojiResyncing;
+  document.getElementById('kaomojiReset').disabled = !kaomojiLoaded || kaomojiResyncing;
   if(!kaomojiLoaded){
     document.getElementById('kaomojiAssign').innerHTML = '<div class="empty-hint">读取中…</div>';
     document.getElementById('kaomojiFaces').innerHTML = '<div class="empty-hint">读取中…</div>';
@@ -212,7 +232,7 @@ function renderKaomoji(fresh){
   const wrap = document.getElementById('kaomojiAssign');
   if(!wrap.contains(document.activeElement)){
     wrap.innerHTML = machines.length ? machines.map(name => `<label class="assign-row"><span>${escapeHtml(name)}</span>
-        <select data-assign="${escapeAttr(name)}">${options(name)}</select></label>`).join('')
+        <select data-assign="${escapeAttr(name)}"${kaomojiResyncing ? ' disabled' : ''}>${options(name)}</select></label>`).join('')
       : '<div class="empty-hint">还没有机器。</div>';
   }
   // The face fields are only rebuilt when the page is opened, so a refresh never eats typing.
@@ -234,10 +254,16 @@ function collectFaces(){
   return faces;
 }
 
-// After a failed save: drop any optimistic change and show what the server really holds.
+// After a failed save: drop any optimistic change and show what the server really holds. Until
+// then the pickers and buttons are disabled; typed faces stay as typed so they can be saved again.
+let kaomojiResyncing = false;
 function resyncKaomoji(){
-  loadKaomoji().then(() => {
-    if(document.activeElement && document.activeElement.closest('#kaomojiAssign')) document.activeElement.blur();
+  kaomojiResyncing = true;
+  if(document.activeElement && document.activeElement.closest('#kaomojiAssign')) document.activeElement.blur();
+  renderKaomoji(false);
+  return loadKaomoji().then(ok => {
+    kaomojiResyncing = false;
+    if(!ok){ kaomojiLoaded = false; loadFailed('kaomojiMsg'); }   // retried when the page reopens
     renderKaomoji(false);
   });
 }
@@ -246,14 +272,14 @@ function resyncKaomoji(){
 // queue then sends the whole section as it stands. Resolves to whether this save landed.
 const kaomojiQueue = makeSaveQueue();
 function saveKaomoji(update){
-  if(!kaomojiLoaded) return Promise.resolve(false);
+  if(!kaomojiLoaded || kaomojiResyncing) return Promise.resolve(false);
   kaomojiConfig = {...kaomojiConfig, ...update};
   setMsg('kaomojiMsg', 'caption', '保存中…');
   return kaomojiQueue(() => postJson('/api/kaomoji', kaomojiConfig), (r, last) => {
     if(!r.ok){
       setMsg('kaomojiMsg', 'err', '没保存上：' + r.error);
-      resyncKaomoji();
-      return;
+      kaomojiQueue.dropQueued();
+      return resyncKaomoji();   // the queue waits for this before anything else goes out
     }
     // An earlier reply would roll back changes still queued behind it; only the last one applies.
     if(last){
@@ -265,7 +291,7 @@ function saveKaomoji(update){
 
 document.getElementById('kaomojiAssign').addEventListener('change', e => {
   const sel = e.target.closest('[data-assign]');
-  if(!sel || !kaomojiLoaded) return;
+  if(!sel || !kaomojiLoaded || kaomojiResyncing) return;
   const assign = {...kaomojiConfig.assign};
   if(sel.value) assign[sel.dataset.assign] = sel.value; else delete assign[sel.dataset.assign];
   // Face fields not yet saved stay as typed; only the picks change.
