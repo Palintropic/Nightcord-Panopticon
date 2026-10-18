@@ -188,6 +188,14 @@ class StatusPushAlertRoundTests(StatusPushTests):
         app._alert_round()
         self.assertEqual(self.notifier.sent, [("2702 检测故障告警", "red"), ("2702 检测故障告警已恢复", "green")])
 
+    def test_simulated_fault_alerts_and_recovers_when_it_leaves_the_list(self):
+        self.push([{"id": "simulated-fault", "display_name": "Nightcord-VoIP 模拟故障",
+                    "type": "simulated", "status": "down", "last_error": "simulation"}])
+        app._alert_round()
+        self.push([])
+        app._alert_round()
+        self.assertEqual(self.notifier.sent, [("2702 检测故障告警", "red"), ("2702 检测故障告警已恢复", "green")])
+
     def test_silent_2702_does_not_fake_a_recovery(self):
         self.push(self.esxi("down"))
         app._alert_round()
