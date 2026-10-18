@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>Panopticon</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/static/theme.js"></script>
 <link rel="stylesheet" href="/static/uwp.css">
 <style>
   /* Dashboard-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
@@ -20,8 +21,7 @@
               align-items:center;gap:var(--gutter);min-height:var(--list-item-min-height);
               padding:8px var(--page-margin);text-decoration:none}
   .machine-head{min-height:0;padding-top:0;padding-bottom:4px;font:var(--type-caption);color:var(--SystemBaseMedium)}
-  .machine-row:hover{background:rgb(255 255 255 / 0.1)}   /* by eye: list pointer-over */
-  @media (prefers-color-scheme: light){ .machine-row:hover{background:rgb(0 0 0 / 0.06)} }
+  .machine-row:hover{background:var(--ListPointerOver)}
   .machine-row .name{font:var(--type-base);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .num{font-variant-numeric:tabular-nums;text-align:right}
   .seen{font:var(--type-caption);color:var(--SystemBaseMedium);text-align:right}
