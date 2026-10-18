@@ -178,3 +178,96 @@ def merge_submitted(old_cfg: dict, submitted: dict):
     merged = dict(old_cfg)
     merged.update({"panels": merged_panels, "dashboard_auth": merged_da, "notifications": merged_notif})
     return merged, errors
+
+
+# 设置 → 主题：曲线、正常磁贴、底部状态栏各自的颜色，存在 config.yaml 的 appearance 段，
+# 所有设备共用。没设置的部分用 25 时紫（跟 uwp.css 里的 --SystemAccent 一致）。
+APPEARANCE_PARTS = ("curve", "tile", "bar")
+DEFAULT_ACCENT = "#884499"
+
+
+def _clean_hex(v):
+    """'#AbC123' / 'abc123' → '#abc123'；其它一律 None。"""
+    if not isinstance(v, str):
+        return None
+    s = v.strip().lstrip("#")
+    if len(s) != 6 or any(c not in "0123456789abcdefABCDEF" for c in s):
+        return None
+    return "#" + s.lower()
+
+
+def appearance_of(cfg: dict) -> dict:
+    stored = (cfg or {}).get("appearance") or {}
+    return {part: _clean_hex(stored.get(part)) or DEFAULT_ACCENT for part in APPEARANCE_PARTS}
+
+
+def clean_appearance(submitted: dict):
+    """返回 (colours, errors)。三项都要给，格式是 #rrggbb。"""
+    colours, errors = {}, []
+    names = {"curve": "曲线", "tile": "磁贴", "bar": "状态栏"}
+    for part in APPEARANCE_PARTS:
+        hex_value = _clean_hex((submitted or {}).get(part))
+        if hex_value is None:
+            errors.append(f"{names[part]}颜色要写成 #rrggbb")
+        else:
+            colours[part] = hex_value
+    return colours, errors
+
+
+# 设置 → 颜文字：哪台机器由哪个角色看（assign: 机器名 → 角色名），以及改过的表情
+# （faces: 角色名 → [正常, 接近阈值, 离线或出事]，空字符串 = 用默认）。角色表本身在前端，
+# 这里只管格式和长度，不认识的角色名前端会退回自动分配。
+KAOMOJI_FACE_MAX = 24
+_KAOMOJI_NAME_MAX = 16
+_KAOMOJI_MACHINE_MAX = 128
+_KAOMOJI_MAX_ENTRIES = 200
+
+
+def _plain_text(v, limit):
+    """去掉首尾空白；不是字符串、太长或带控制字符的返回 None。"""
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if len(s) > limit or any(ord(c) < 32 or ord(c) == 127 for c in s):
+        return None
+    return s
+
+
+def kaomoji_of(cfg: dict) -> dict:
+    stored = (cfg or {}).get("kaomoji") or {}
+    cleaned, _ = clean_kaomoji(stored if isinstance(stored, dict) else {})
+    return cleaned
+
+
+def clean_kaomoji(submitted: dict):
+    """返回 (kaomoji, errors)。坏掉的条目报错，不静默丢掉。"""
+    errors = []
+    assign_in = (submitted or {}).get("assign") or {}
+    faces_in = (submitted or {}).get("faces") or {}
+    if not isinstance(assign_in, dict) or not isinstance(faces_in, dict):
+        return {"assign": {}, "faces": {}}, ["格式不对"]
+    if len(assign_in) > _KAOMOJI_MAX_ENTRIES or len(faces_in) > _KAOMOJI_MAX_ENTRIES:
+        return {"assign": {}, "faces": {}}, ["条目太多"]
+
+    assign = {}
+    for machine, chara in assign_in.items():
+        m = _plain_text(machine, _KAOMOJI_MACHINE_MAX)
+        c = _plain_text(chara, _KAOMOJI_NAME_MAX)
+        if not m or not c:
+            errors.append(f"机器【{str(machine)[:32]}】的角色不对")
+            continue
+        assign[m] = c
+
+    faces = {}
+    for chara, triple in faces_in.items():
+        c = _plain_text(chara, _KAOMOJI_NAME_MAX)
+        if not c or not isinstance(triple, list) or len(triple) != 3:
+            errors.append(f"【{str(chara)[:16]}】的表情要正好三个")
+            continue
+        cleaned = [_plain_text(f, KAOMOJI_FACE_MAX) for f in triple]
+        if any(f is None for f in cleaned):
+            errors.append(f"【{c}】的表情最多 {KAOMOJI_FACE_MAX} 个字，也不能换行")
+            continue
+        if any(cleaned):
+            faces[c] = cleaned
+    return {"assign": assign, "faces": faces}, errors

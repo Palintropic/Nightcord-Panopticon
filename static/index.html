@@ -9,12 +9,6 @@
 <style>
   /* Dashboard-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
 
-  /* Stats strip (as PNS): Subheader numbers over Caption labels. */
-  .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gutter);margin-top:var(--gutter)}
-  @media (max-width:640px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))} }
-  .stat-value{font:var(--type-subheader);font-variant-numeric:tabular-nums}
-  .stat-label{font:var(--type-caption);color:var(--SystemBaseMedium)}
-
   /* Machine table: list items 40 high; square status mark sized by eye (as PNS's score dot). */
   .machine-list{margin:var(--gutter) calc(-1 * var(--page-margin)) 0}
   .machine-row,.machine-head{display:grid;grid-template-columns:16px minmax(0,1fr) 72px 72px 72px 132px;
@@ -29,35 +23,47 @@
   .mark{width:8px;height:8px;background:var(--SystemBaseMedium)}
   .mark.ok{background:var(--ok)} .mark.caution{background:var(--caution)} .mark.warn{background:var(--warn)}
   .machine-row .summary{display:none}
-  @media (max-width:640px){
+  @container (max-width:640px){
     .machine-head{display:none}
     .machine-row{grid-template-columns:16px minmax(0,1fr);row-gap:2px}
     .machine-row .num,.machine-row .seen{display:none}
     .machine-row .summary{display:block;grid-column:2;font:var(--type-caption);color:var(--SystemBaseMedium)}
   }
 
-  /* Server tiles: a solid block, white text, label bottom-left with an 8 inset; no border, radius
-     or shadow. Phone width keeps the 304 wide tile; wider windows stretch tiles to fill the row
-     and make them 164 high (both by eye, a desktop deviation from the fixed W10M sizes). */
-  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(304px,1fr));gap:8px;margin-top:var(--group-gap)}
-  .tile{position:relative;display:block;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
+  /* Overview: one row per machine, a square tile on the left and the last hour of one metric on
+     the right. At phone width the curve drops under its tile. Tile 148 square (W10M medium tile
+     150, rounded to the 4 grid); no border, radius or shadow. */
+  /* Width breakpoints are container queries on .shell so they follow the 缩放 setting (uwp.css). */
+  .ov-switch{display:flex;justify-content:flex-end;margin-top:var(--gutter)}
+  .ov-switch select{width:auto}
+  .ov-row{display:grid;grid-template-columns:148px minmax(0,1fr);gap:var(--gutter);margin-top:var(--gutter)}
+  @container (max-width:640px){ .ov-row{grid-template-columns:minmax(0,1fr);gap:8px} .ov-row + .ov-row{margin-top:var(--group-gap)} }
+  .tile{position:relative;display:block;width:148px;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
         -webkit-tap-highlight-color:transparent}
-  @media (min-width:640px){ .tile{height:164px} }
   .tile-inner{position:absolute;inset:0;overflow:hidden;padding:8px;background:var(--tile-bg);
               transition:transform 200ms cubic-bezier(0,0,0.2,1)}   /* by eye: release */
   .tile.pressed .tile-inner{transition-duration:90ms}                 /* by eye: press */
-  .tile.state-ok{--tile-bg:var(--SystemAccent)}
+  .tile.state-ok{--tile-bg:var(--TileAccent);color:var(--TileForeground)}
   .tile.state-warn{--tile-bg:var(--warn)}
   .tile.state-caution{--tile-bg:var(--caution);color:#000000}  /* deviation: white on amber fails contrast */
   .tile.state-offline{--tile-bg:var(--SystemChromeGray)}
-  .tile .readings{display:flex;gap:16px}
-  .tile .reading .t-value{font:var(--type-title);font-variant-numeric:tabular-nums}
-  .tile .reading .t-label{font:var(--type-caption);opacity:.8}
-  .tile svg{position:absolute;left:8px;right:8px;bottom:32px;width:calc(100% - 16px);height:44px}
-  .tile .tile-label{position:absolute;left:8px;bottom:8px;right:8px;display:flex;justify-content:space-between;gap:8px;
-                    font:var(--type-control);white-space:nowrap}
-  .tile .tile-label .name{overflow:hidden;text-overflow:ellipsis}
-  .tile .tile-label .seen{font:var(--type-caption);opacity:.8;align-self:flex-end}
+  .tile .t-state{font:var(--type-control)}
+  /* Kaomoji: Subtitle 20, centred in the tile (by eye). */
+  .tile .face{position:absolute;left:4px;right:4px;top:50%;transform:translateY(-50%);text-align:center;
+              font:var(--type-subtitle);white-space:nowrap}
+  .tile .tile-label{position:absolute;left:8px;bottom:8px;right:8px;display:flex;justify-content:space-between;
+                    align-items:flex-end;gap:8px;white-space:nowrap}
+  .tile .chara{font:var(--type-caption);opacity:.8;flex:0 0 auto}
+  .tile .name{font:var(--type-control);overflow:hidden;text-overflow:ellipsis;text-align:right}
+  /* Readings as the old stats strip: Subheader numbers over Caption labels, always all three. */
+  .ov-trend{min-width:0;display:flex;flex-direction:column}
+  .ov-readings{display:flex;gap:var(--group-gap)}
+  .stat-value{font:var(--type-subheader);font-variant-numeric:tabular-nums}
+  .stat-label{font:var(--type-caption);color:var(--SystemBaseMedium)}
+  .ov-chart{position:relative;flex:1;min-height:56px;margin-top:4px}
+  .ov-chart svg{position:absolute;inset:0;width:100%;height:100%}
+  .ov-axis{display:flex;justify-content:space-between;font:var(--type-caption);color:var(--SystemBaseMedium)}
+  @container (max-width:640px){ .ov-chart{flex:0 0 72px} }
 
   /* Detail */
   .fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));column-gap:var(--group-gap)}
@@ -72,6 +78,51 @@
   .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font:var(--type-caption)}
   .legend i{display:inline-block;width:12px;height:2px;vertical-align:middle;margin-right:6px}
 
+  /* Settings. Home is a list of categories (as Windows 10 Mobile Settings): Body title over a
+     Caption hint, rows 40+ high with the list pointer-over. Each category opens as its own page. */
+  .settings-list{margin:var(--gutter) calc(-1 * var(--page-margin)) 0}
+  .settings-entry{display:block;min-height:var(--list-item-min-height);padding:8px var(--page-margin);text-decoration:none}
+  .settings-entry:hover{background:var(--ListPointerOver)}
+  .settings-entry .se-title{font:var(--type-body)}
+  .page{max-width:760px}   /* by eye: same measure as the form grid */
+  .page[hidden]{display:none}
+  .panel-card{padding:12px 0;border-bottom:1px solid var(--SystemBaseLow)}
+  .panel-card:last-child{border-bottom:0}
+  .card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--gutter);margin-bottom:var(--header-gap)}
+  /* Settings deliberately keep a Save command for fields you type into (secrets, addresses):
+     a deviation from the Windows 10 Settings app, where every change applies at once. */
+  .save-row{display:flex;align-items:center;gap:var(--gutter);margin-top:var(--group-gap)}
+  .save-msg.ok{color:var(--ok)} .save-msg.err{color:var(--warn)}
+  #feishuTestMsg.ok{color:var(--ok)} #feishuTestMsg.err{color:var(--warn)}
+  #deployMsg.ok{color:var(--ok)} #deployMsg.err{color:var(--warn)}
+  #accentMsg.err{color:var(--warn)}
+  .inline{display:flex;align-items:center;gap:var(--gutter);flex-wrap:wrap}
+  .radios.stacked{flex-direction:column;align-items:flex-start}   /* as Windows 10 Settings' theme choice */
+  /* Colour swatches as Windows 10 Settings → Colours: 40 squares 4 apart (by eye); the picked one
+     carries a 2 BaseHigh frame and a check in its own foreground. */
+  .swatches{display:flex;flex-wrap:wrap;gap:4px;max-width:400px;margin-bottom:var(--gutter)}
+  .swatch{width:40px;height:40px;display:grid;place-content:center;font:var(--type-base)}
+  .swatch[aria-checked="true"]{outline:2px solid var(--SystemBaseHigh);outline-offset:-2px}
+  .swatch[aria-checked="true"]::after{content:"✓"}
+  .custom-colour{display:flex;gap:8px;align-items:center}
+  .custom-colour input[type=text]{width:120px}   /* beats the full-width field rule in uwp.css */
+  .custom-colour .chip{width:32px;height:32px;flex:0 0 auto}
+  /* Presets: three chips (tile, curve, bar) beside the name. */
+  /* 颜文字: machine → character pickers, then one row per character with its three faces. */
+  .assign-row{display:grid;grid-template-columns:minmax(0,1fr) 160px;align-items:center;gap:var(--gutter);
+              min-height:var(--list-item-min-height);max-width:480px}
+  .face-head,.face-row{display:grid;grid-template-columns:64px repeat(3,minmax(0,1fr));align-items:center;
+                       gap:8px;max-width:620px}
+  .face-head{font:var(--type-caption);color:var(--SystemBaseMedium);margin-bottom:4px}
+  .face-row{margin-bottom:8px}
+  .face-row .who{font:var(--type-body)}
+  #kaomojiMsg.ok{color:var(--ok)} #kaomojiMsg.err{color:var(--warn)}
+  .presets{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:4px;max-width:760px}
+  .preset{display:flex;align-items:center;gap:12px;min-height:var(--list-item-min-height);padding:4px 8px;text-align:left}
+  .preset:hover{background:var(--ListPointerOver)}
+  .preset .chips{display:flex;flex:0 0 auto}
+  .preset .chips i{width:20px;height:20px}
+
   @media (prefers-reduced-motion: reduce){ .tile-inner{transition:none} }
 </style>
 </head>
@@ -85,6 +136,197 @@
     <nav class="pivot-headers" id="pivotHeaders" role="tablist"></nav>
   </header>
   <main class="content" id="content"></main>
+  <main class="content" id="settingsView" hidden>
+
+    <!-- 主题 -->
+    <section class="page" data-page="theme" hidden>
+      <div class="group">
+        <div class="group-header">模式</div>
+        <div class="description">只对这个浏览器生效，换一台设备要重新选。</div>
+        <div class="radios stacked" role="radiogroup" aria-label="模式">
+          <label class="radio"><input type="radio" name="theme" value="light"> 浅色</label>
+          <label class="radio"><input type="radio" name="theme" value="dark"> 深色</label>
+          <label class="radio"><input type="radio" name="theme" value="system"> 使用系统设置</label>
+        </div>
+      </div>
+      <div class="group">
+        <div class="group-header">缩放</div>
+        <div class="description">把文字和界面整体放大或缩小，像 Windows 的“缩放与布局”。跟模式一样只对这个浏览器生效：大屏幕和手机可以各设各的。</div>
+        <select id="uiScale" aria-label="缩放" style="width:auto"></select>
+      </div>
+      <div class="group">
+        <div class="group-header">配色方案</div>
+        <div class="description">点一下，三处颜色一起换，之后还能单独改。下面的颜色都存在服务器上，手机和电脑看到的一样；选了马上生效，不用保存。</div>
+        <div class="presets" id="accentPresets"></div>
+      </div>
+      <div class="group">
+        <div class="group-header">磁贴</div>
+        <div class="description">总览里一切正常的机器磁贴。红色和黄色留给“需要关注”和“接近阈值”，选太接近的颜色会分不清。</div>
+        <div class="swatches" role="radiogroup" aria-label="磁贴颜色" data-accent="tile"></div>
+        <div class="custom-colour" data-accent-custom="tile"></div>
+      </div>
+      <div class="group">
+        <div class="group-header">曲线</div>
+        <div class="description">总览里每台机器最近 1 小时的曲线。</div>
+        <div class="swatches" role="radiogroup" aria-label="曲线颜色" data-accent="curve"></div>
+        <div class="custom-colour" data-accent-custom="curve"></div>
+      </div>
+      <div class="group">
+        <div class="group-header">状态栏</div>
+        <div class="description">底部那一条。有机器需要关注时，最左边那格照样是红色。</div>
+        <div class="swatches" role="radiogroup" aria-label="状态栏颜色" data-accent="bar"></div>
+        <div class="custom-colour" data-accent-custom="bar"></div>
+      </div>
+      <div class="caption" id="accentMsg"></div>
+    </section>
+
+    <!-- 颜文字 -->
+    <section class="page" data-page="kaomoji" hidden>
+      <div class="group">
+        <div class="group-header">谁看哪台机器</div>
+        <div class="description">“自动”按机器名固定分一个人。选了马上生效，所有设备一起换。</div>
+        <div id="kaomojiAssign"></div>
+      </div>
+      <div class="group">
+        <div class="group-header">表情</div>
+        <div class="description">每人三种，磁贴按机器状态换。留空就用默认的（框里灰色那个）。最多 24 个字。</div>
+        <div class="face-head"><span></span><span>一切正常</span><span>接近阈值</span><span>离线或需要关注</span></div>
+        <div id="kaomojiFaces"></div>
+        <div class="save-row"><button class="btn btn-accent" id="kaomojiSave">保存</button>
+          <button class="btn" id="kaomojiReset">全部恢复默认</button><span class="caption" id="kaomojiMsg"></span></div>
+      </div>
+    </section>
+
+    <!-- 通知 -->
+    <section class="page" data-page="notify" hidden>
+      <div class="group">
+        <div class="group-header">告警阈值</div>
+        <div class="description">CPU、内存、磁盘使用率超过这个百分比就告警；看板上的红色也用同一套阈值。</div>
+        <div class="form-grid">
+          <label class="field">CPU %<input type="number" id="thCpu" value="90"></label>
+          <label class="field">内存 %<input type="number" id="thMem" value="90"></label>
+          <label class="field">磁盘 %<input type="number" id="thDisk" value="85"></label>
+          <label class="field">同一条告警最小推送间隔（秒）<input type="number" id="cooldown" value="600"></label>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-header">飞书</div>
+        <div class="description">群设置 → 群机器人 → 添加"自定义机器人"，把 Webhook 地址填在这里。</div>
+        <label class="check"><input type="checkbox" id="feishuEnabled"> 开启飞书推送</label>
+        <div class="form-grid">
+          <label class="field">Webhook 地址
+            <input type="password" id="feishuWebhook" placeholder="留空则不修改">
+            <span class="field-hint" id="feishuHint"></span>
+          </label>
+        </div>
+        <div class="inline">
+          <button type="button" class="btn" onclick="testFeishu()">发送测试通知</button>
+          <span id="feishuTestMsg" class="caption">测试用的是已保存的配置，改了 Webhook 要先保存。</span>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="group-header">邮件</div>
+        <label class="check"><input type="checkbox" id="emailEnabled"> 开启邮件推送</label>
+        <div class="form-grid">
+          <label class="field">SMTP 服务器<input type="text" id="emailHost" placeholder="smtp.qq.com"></label>
+          <label class="field">端口<input type="number" id="emailPort" value="465"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="emailSsl"> 使用 SSL（465 端口通常勾选）</label>
+        <label class="check"><input type="checkbox" id="emailTls"> 使用 STARTTLS（587 端口通常勾选）</label>
+        <div class="form-grid">
+          <label class="field">发信账号<input type="text" id="emailUsername" placeholder="you@qq.com"></label>
+          <label class="field">SMTP 授权码
+            <input type="password" id="emailPassword" placeholder="留空则不修改">
+            <span class="field-hint" id="emailHint"></span>
+          </label>
+          <label class="field">发件人<input type="text" id="emailFrom" placeholder="you@qq.com"></label>
+          <label class="field">收件人（多个用逗号分隔）<input type="text" id="emailTo" placeholder="a@b.com, c@d.com"></label>
+        </div>
+      </div>
+      <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
+    </section>
+
+    <!-- 青源机器 -->
+    <section class="page" data-page="agents" hidden>
+      <div class="group">
+        <div class="description">上报过的机器会一直被盯着，离线超过 3 分钟就告警。机器退役或卸掉 agent 后在这里移除；
+          移除后如果它又开始上报，会自动回到列表里。</div>
+        <div id="agentList"></div>
+      </div>
+    </section>
+
+    <!-- 部署 -->
+    <section class="page" data-page="deploy" hidden>
+      <div class="group">
+        <div class="group-header">一键部署青源 agent</div>
+        <div class="description">填目标服务器的 SSH 信息，自动装好青源 agent 并注册成 systemd 常驻服务。
+          密码只在这次安装里用一次；勾选"记住密码"才会加密保存，方便以后一键重装。</div>
+        <div class="form-grid">
+          <label class="field">服务器 IP<input type="text" id="deployIp" placeholder="10.10.0.5"></label>
+          <label class="field">端口<input type="number" id="deployPort" value="22"></label>
+          <label class="field">SSH 账号<input type="text" id="deployUser" value="root"></label>
+          <label class="field">密码<input type="password" id="deployPassword" placeholder="SSH 登录密码"></label>
+        </div>
+        <div class="form-grid">
+          <label class="field">这台机器是不是某个宝塔面板？
+            <select id="deployBindPanel"><option value="">不绑定（用远端 hostname 当名字）</option></select>
+            <span class="field-hint">选了的话青源上报会用那个面板的名字，两边数据显示在同一张卡片上。</span>
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="deployRemember"> 记住这台服务器的密码（加密保存）</label>
+        <div class="inline" style="margin-top:var(--gutter)">
+          <button class="btn btn-accent" onclick="deployAgent()">一键安装</button>
+          <span id="deployMsg" class="caption"></span>
+        </div>
+        <pre id="deployLog" class="log" hidden style="margin-top:var(--gutter)"></pre>
+      </div>
+      <div class="group">
+        <div class="group-header">已记住密码的服务器</div>
+        <div id="agentHosts"></div>
+      </div>
+    </section>
+
+    <!-- 登录 -->
+    <section class="page" data-page="login" hidden>
+      <div class="group">
+        <div class="group-header">密码</div>
+        <div class="description">看板如果要公网暴露，务必开启。密码留空表示不修改。</div>
+        <label class="check"><input type="checkbox" id="authEnabled"> 开启登录验证</label>
+        <div class="form-grid">
+          <label class="field">用户名<input type="text" id="authUsername" placeholder="mizuki"></label>
+          <label class="field">新密码
+            <input type="password" id="authPassword" placeholder="留空则不修改">
+            <span class="field-hint" id="authPasswordHint"></span>
+          </label>
+          <label class="field">连续失败几次后锁定<input type="number" id="authMaxAttempts" value="5"></label>
+          <label class="field">锁定时长（秒）<input type="number" id="authLockout" value="900"></label>
+        </div>
+        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
+      </div>
+      <div class="group">
+        <div class="group-header">Passkey</div>
+        <div class="description">用设备生物识别或安全密钥登录，密码登录照样保留。需要通过 HTTPS 访问（本机 localhost 除外）。</div>
+        <div id="passkeyList"></div>
+        <div class="inline" style="margin-top:var(--gutter)">
+          <button class="btn" onclick="addPasskey()">添加本设备的 Passkey</button>
+          <span class="caption" id="passkeyHint"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 宝塔面板 -->
+    <section class="page" data-page="panels" hidden>
+      <div class="group">
+        <div class="description">可选数据源：宝塔面板的地址和 API 密钥。地址建议填 WireGuard 内网地址（如 <code>http://10.10.0.2:18101</code>）。
+          只用青源 agent 的话这里留空就行。</div>
+        <div id="panels"></div>
+        <button class="btn" onclick="addPanelRow()" style="margin-top:var(--gutter)">添加面板</button>
+        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
+      </div>
+    </section>
+  </main>
   <footer class="status-bar">
     <a class="status-item status-alert" id="statusAlert" href="#p=1" hidden></a>
     <span class="status-item status-summary"><span id="statusSummary">加载中…</span></span>
@@ -216,7 +458,7 @@ function panels(){ return (lastData && lastData.panels) || []; }
 
 // ---------- routing ----------
 // Top-level pivot items. 告警 / 终端 / 文件 are reserved for planned features and render a
-// placeholder until they exist; 设置 is its own page (/settings).
+// placeholder until they exist. 设置 lists categories; each opens as its own page (#s=<key>).
 const TOP_PIVOTS = [
   {label:'总览', render:() => overview()},
   {label:'机器', render:() => machinesView()},
@@ -229,9 +471,25 @@ const TOP_PIVOTS = [
   {label:'文件', render:() => reserved('文件管理',
     '浏览、上传、下载、在线编辑机器上的文件。跟终端走同一扇门：同一条 SSH 连接上的 SFTP，同样由 SSO 授权、同样记审计。',
     '等 SSO 上线后开放，和终端一起做。')},
+  {label:'设置', render:() => settingsList()},
 ];
-// #p=<n> top-level pivot item, #m=<name> machine detail.
+const SETTINGS_PIVOT = 5;
+// The forms live in #settingsView (static markup, driven by /static/settings.js) so a refresh
+// redraw never wipes what is being typed.
+const SETTINGS_PAGES = [
+  {key:'theme', label:'主题', hint:'浅色 / 深色，磁贴、曲线、状态栏的颜色'},
+  {key:'kaomoji', label:'颜文字', hint:'谁看哪台机器，每人三种表情'},
+  {key:'notify', label:'通知', hint:'告警阈值、飞书、邮件'},
+  {key:'agents', label:'青源机器', hint:'正在盯着的机器，移除退役的'},
+  {key:'deploy', label:'部署', hint:'一键给服务器装青源 agent'},
+  {key:'login', label:'登录', hint:'密码、Passkey'},
+  {key:'panels', label:'宝塔面板', hint:'可选的宝塔数据源'},
+];
+// #p=<n> top-level pivot item, #m=<name> machine detail, #s=<key> settings page.
 function route(){
+  const s = location.hash.match(/^#s=(\w+)$/);
+  const key = s && (s[1] === 'appearance' ? 'theme' : s[1]);   // 外观 became 主题
+  if(key && SETTINGS_PAGES.some(x => x.key === key)) return {view:'settings', page:key};
   const m = location.hash.match(/^#m=(.*)$/);
   if(m){
     try{ return {view:'detail', name:decodeURIComponent(m[1])}; }
@@ -239,6 +497,20 @@ function route(){
   }
   const n = Number((location.hash.match(/^#p=(\d+)$/) || [])[1] || 0);
   return {view:'list', pivot: n < TOP_PIVOTS.length ? n : 0};
+}
+
+function settingsList(){
+  const firstRun = window.panopticonSettings && window.panopticonSettings.firstRun;
+  const banner = firstRun ? `<div class="notice" style="max-width:760px">
+      这是首次配置：先到「登录」设好密码，再到「部署」给机器装青源 agent。
+      <strong>如果看板打算公网暴露，请先完成登录密码</strong>，否则这里对任何能访问到的人都是开放的。</div>` : '';
+  return banner + `<div class="settings-list">${SETTINGS_PAGES.map(pg =>
+    `<a class="settings-entry" href="#s=${pg.key}"><div class="se-title">${pg.label}</div><div class="caption">${pg.hint}</div></a>`).join('')}</div>`;
+}
+// Called by settings.js once it knows whether this is a first run.
+function settingsChanged(){
+  const r = route();
+  if(r.view === 'list' && r.pivot === SETTINGS_PIVOT) render(false);
 }
 
 function reserved(title, what, when){
@@ -253,6 +525,33 @@ function render(animate){
   const back = document.getElementById('back');
   const title = document.getElementById('title');
   const headers = document.getElementById('pivotHeaders');
+  const content = document.getElementById('content');
+  const settingsView = document.getElementById('settingsView');
+  content.hidden = r.view === 'settings';
+  settingsView.hidden = r.view !== 'settings';
+  if(r.view === 'settings'){
+    const pg = SETTINGS_PAGES.find(x => x.key === r.page);
+    back.hidden = false;
+    title.textContent = '设置';
+    headers.innerHTML = `<button class="pivot-header-item" role="tab" aria-selected="true">${pg.label}</button>`;
+    settingsView.querySelectorAll('section.page').forEach(sec => {
+      const on = sec.dataset.page === r.page;
+      sec.hidden = !on;
+      sec.classList.toggle('entering', on && animate && !reduceMotion.matches);
+    });
+    if(animate) settingsView.scrollTop = 0;
+    if(window.panopticonSettings) window.panopticonSettings.open(r.page, animate);
+    renderStatusBar();
+    return;
+  }
+  // Background redraws of 总览 replace only the rows, so the metric ComboBox is never rebuilt
+  // under someone who has it open.
+  const rows = !animate && r.view === 'list' && r.pivot === 0 && !noData() ? document.getElementById('ovRows') : null;
+  if(rows){
+    rows.innerHTML = overviewRows();
+    renderStatusBar();
+    return;
+  }
   let html;
   if(r.view === 'detail'){
     const p = panels().find(x => x.name === r.name);
@@ -268,11 +567,10 @@ function render(animate){
     back.hidden = true;
     title.textContent = 'Panopticon';
     headers.innerHTML = TOP_PIVOTS.map((pv, i) =>
-      `<button class="pivot-header-item" role="tab" aria-selected="${i === r.pivot}" data-pivot="${i}">${pv.label}</button>`).join('')
-      + '<a class="pivot-header-item" role="tab" aria-selected="false" href="/settings">设置</a>';
+      `<button class="pivot-header-item" role="tab" aria-selected="${i === r.pivot}" data-pivot="${i}">${pv.label}</button>`).join('');
     html = TOP_PIVOTS[r.pivot].render();
+    if(r.pivot === SETTINGS_PIVOT && window.panopticonSettings) window.panopticonSettings.ensureLoaded();
   }
-  const content = document.getElementById('content');
   content.innerHTML = `<div${animate && !reduceMotion.matches ? ' class="entering"' : ''}>${html}</div>`;
   if(r.view === 'detail'){
     const p = panels().find(x => x.name === r.name);
@@ -312,9 +610,10 @@ function renderStatusBar(){
   const attention = ps.filter(p => stateOf(p) === 'warn').length;
   alert.hidden = attention === 0;
   alert.textContent = `${attention} 需要关注`;
+  const caution = ps.filter(p => stateOf(p) === 'caution').length;
   // Notes sit next to the count, which stays visible at phone width.
   const notes = [...staleNotes(), remoteNote()].filter(Boolean);
-  summary.textContent = [`${online} / ${machines.length} 在线`, ...notes].join(' · ');
+  summary.textContent = [`${online} / ${machines.length} 在线`, caution ? `${caution} 接近阈值` : '', ...notes].filter(Boolean).join(' · ');
   summary.title = summary.textContent;
   updated.textContent = '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
 }
@@ -346,22 +645,25 @@ function stat(value, label, cls){
   return `<div><div class="stat-value ${cls || ''}">${value}</div><div class="stat-label">${label}</div></div>`;
 }
 
+// Problem machines first: offline, then needs attention, then near a threshold; ties keep the
+// server's order.
+function overviewRank(p){
+  if(p.kind !== 'nightcord-status' && (isOffline(p) || noMetrics(p))) return 0;
+  return {warn:1, caution:2}[stateOf(p)] ?? 3;
+}
+
 function overview(){
   const empty = noData();
   if(empty) return empty;
-  const ps = panels();
-  const machines = ps.filter(p => p.kind !== 'nightcord-status');
-  const online = machines.filter(p => !isOffline(p)).length;
-  const attention = ps.filter(p => stateOf(p) === 'warn').length;
-  const caution = ps.filter(p => stateOf(p) === 'caution').length;
-  return `<div class="stats">
-    ${stat(machines.length, '机器')}
-    ${stat(online, '在线', 'ok')}
-    ${stat(attention, '需要关注', attention ? 'warn' : '')}
-    ${stat(caution, '接近阈值', caution ? 'caution' : '')}
-  </div>
-  <div class="tiles">${ps.map(tile).join('')}</div>
-  <div class="caption" style="margin-top:8px">磁贴里的曲线：实线 CPU，淡线内存，最近 1 小时</div>`;
+  const options = OVERVIEW_METRICS.map(o =>
+    `<option value="${o.key}"${o.key === overviewMetric ? ' selected' : ''}>${o.label}</option>`).join('');
+  return `<div class="ov-switch"><select id="overviewMetric" aria-label="曲线显示">${options}</select></div>
+    <div id="ovRows">${overviewRows()}</div>`;
+}
+function overviewRows(){
+  const ps = panels().map((p, i) => [p, i])
+    .sort((a, b) => overviewRank(a[0]) - overviewRank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  return ps.map(p => `<div class="ov-row">${tile(p)}${trend(p)}</div>`).join('');
 }
 
 function stateText(p){
@@ -408,45 +710,135 @@ function machinesView(){
   }).join('')}</div>`;
 }
 
-function sparkline(samples){
-  const w = 300, h = 44;
-  const tsList = samples.map(s => s.ts);
-  const minTs = Math.min(...tsList), span = Math.max(Math.max(...tsList) - minTs, 1);
-  const x = t => ((t - minTs) / span) * w;
-  const y = v => h - (Math.min(100, Math.max(0, v ?? 0)) / 100) * (h - 4) - 2;
-  const line = (k, op) => `<polyline points="${samples.map(s => `${x(s.ts).toFixed(1)},${y(s[k]).toFixed(1)}`).join(' ')}"
-    fill="none" stroke="currentColor" stroke-opacity="${op}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${line('mem', 0.55)}${line('cpu', 1)}</svg>`;
+// The curve shows one metric for every machine at once; the choice is kept per browser.
+const OVERVIEW_METRICS = [{key:'cpu', label:'CPU'}, {key:'mem', label:'内存'}, {key:'disk', label:'磁盘'}];
+const METRIC_KEY = 'panopticon.overviewMetric';
+let overviewMetric = 'cpu';
+try{
+  const saved = localStorage.getItem(METRIC_KEY);
+  if(OVERVIEW_METRICS.some(o => o.key === saved)) overviewMetric = saved;
+}catch(e){}
+
+// Gaps longer than this (three missed 30 s reports, as the offline rule) break the line, so an
+// outage reads as a hole rather than a straight ramp.
+const CURVE_GAP_S = 90;
+const CURVE_SPAN_S = 3600;
+function curve(samples, key){
+  const w = 600, h = 72;
+  const end = (lastData && lastData.ts) || Date.now()/1000, start = end - CURVE_SPAN_S;
+  const x = t => ((t - start) / CURVE_SPAN_S) * w;
+  const y = v => h - (Math.min(100, Math.max(0, v)) / 100) * (h - 4) - 2;
+  let d = '', prev = null;
+  samples.forEach(s => {
+    const v = s[key];
+    if(s.ts < start || v === undefined || v === null){ prev = null; return; }
+    d += `${prev === null || s.ts - prev > CURVE_GAP_S ? 'M' : 'L'}${x(s.ts).toFixed(1)},${y(v).toFixed(1)}`;
+    prev = s.ts;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <line x1="0" x2="${w}" y1="${h - 0.5}" y2="${h - 0.5}" stroke="var(--SystemBaseLow)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+    <path d="${d}" fill="none" stroke="var(--CurveAccent)" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+function trend(p){
+  if(p.kind === 'nightcord-status'){
+    const targets = p.targets || [];
+    const down = targets.filter(t => t.status === 'down').length;
+    return `<div class="ov-trend"><div class="ov-readings">${stat(targets.length, '目标')}${stat(down, '故障', down ? 'warn' : '')}</div></div>`;
+  }
+  const th = thresholds(), m = machineMetrics(p), blank = noMetrics(p);
+  const readings = [['CPU', m.cpu, th.cpu], ['内存', m.mem, th.mem], ['磁盘', m.disk, th.disk]].map(([l, v, t]) =>
+    blank ? stat('-', l) : stat(escapeHtml(fmtPct(v)), l, levelOf(v, t))).join('');
+  const samples = tileHistory[p.name] || [];
+  return `<div class="ov-trend"><div class="ov-readings">${readings}</div>
+    <div class="ov-chart">${samples.length ? curve(samples, overviewMetric) : ''}</div>
+    <div class="ov-axis"><span>1 小时前</span><span>现在</span></div></div>`;
+}
+
+// Each machine is looked after by one of the 20 Project SEKAI characters, picked from its name so
+// it stays the same across reloads. Faces: [healthy, near a threshold, offline or needs attention].
+// Fan-made kaomoji written to each character's personality, not official art.
+const CHARACTERS = [
+  ['一歌', ['( ˘ᴗ˘ )♪', '(・_・;)', '(´；ω；`)']],
+  ['咲希', ['ヾ(≧▽≦*)o', '(°ロ°;)', '(｡>﹏<｡)']],
+  ['穗波', ['(◡‿◡✿)', '(´・_・`)', '(´；︵；`)']],
+  ['志步', ['( ¬_¬ )', '(￢_￢;)', '(╬Ò﹏Ó)']],
+  ['实乃理', ['ヽ(>∀<☆)ノ', '(๑•̀ㅂ•́)و', '(´；д；`)']],
+  ['遥', ['(・Θ・)', '( ・ー・)', '(・Θ・;)']],
+  ['爱莉', ['(￣ー￣)ｂ', '(｀へ´)', '(╬｀益´)']],
+  ['雫', ['(*´▽`*)', '(・・？)', '(｡•́︿•̀｡)']],
+  ['心羽', ['(•ᴗ•)', '(°ー°〃)', '(((;°Д°)))']],
+  ['杏', ['(ﾉ≧∀≦)ﾉ', '(・`ω´・)', '(ノ°益°)ノ']],
+  ['彰人', ['( ˘_˘ )', '(¬_¬")', '(╯°□°)╯']],
+  ['冬弥', ['( ・_・)', '( ・_・)？', '( ・_・;)']],
+  ['司', ['☆(｀▽´)☆', '(ﾟДﾟ;)', '(ノД`)']],
+  ['笑梦', ['(≧∇≦)/', '(・o・)？', '(ノ_<。)']],
+  ['宁宁', ['( -_-)', '(-_-;)', '(；´Д`)']],
+  ['类', ['(¬‿¬ )', '(ʘ‿ʘ)', '(⊙﹏⊙)']],
+  ['奏', ['( ˘ω˘ )', '(-ω-;)', '( ˘ω˘ )zzZ']],
+  ['真冬', ['(*^_^*)', '( ・ ・ )', '(　　　)']],
+  ['绘名', ['(๑•̀ω•́)✧', '(¬､¬)', '(ｷ`ﾟДﾟ´)!!']],
+  ['瑞希', ['(๑˃ᴗ˂)ﻭ', '(・ε・)', '(｡>ㅅ<｡)']],
+];
+// 设置 → 颜文字 can pin a character to a machine and replace any face; both are saved on the
+// server (/api/kaomoji). An unknown character name falls back to the automatic pick.
+let kaomojiConfig = {assign:{}, faces:{}};
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+function autoCharacterFor(name){
+  let h = 0;
+  for(const c of String(name)) h = (h * 31 + c.codePointAt(0)) >>> 0;
+  return CHARACTERS[h % CHARACTERS.length];
+}
+function characterFor(name){
+  const picked = own(kaomojiConfig.assign, name) ? kaomojiConfig.assign[name] : null;
+  const [chara, faces] = CHARACTERS.find(c => c[0] === picked) || autoCharacterFor(name);
+  const custom = own(kaomojiConfig.faces, chara) ? kaomojiConfig.faces[chara] : [];
+  return [chara, faces.map((f, i) => custom[i] || f)];
+}
+// The server-side sections (颜文字 here, colours below) load once at start. Saving sends a whole
+// section, so until the saved copy is in, the settings pages keep their controls disabled: an
+// early save would overwrite it with defaults. A page opened before then is redrawn on arrival.
+let kaomojiLoaded = false;
+function loadKaomoji(){
+  return fetchJsonWithTimeout('/api/kaomoji', 10000)
+    .then(r => { if(r.ok) setKaomojiConfig(r.data); return r.ok; }).catch(() => false);
+}
+function setKaomojiConfig(k){
+  const first = !kaomojiLoaded;
+  kaomojiLoaded = true;
+  kaomojiConfig = {assign:(k && k.assign) || {}, faces:(k && k.faces) || {}};
+  const r = route();
+  if(r.view === 'list' && r.pivot === 0) render(false);
+  if(first && r.view === 'settings' && r.page === 'kaomoji' && window.panopticonSettings) window.panopticonSettings.open('kaomoji', true);
+}
+let appearanceLoaded = false;
+// theme.js already painted the cached copy; this brings the saved one.
+function loadAppearance(){
+  return fetchJsonWithTimeout('/api/appearance', 10000).then(r => {
+    if(!r.ok || !window.panopticonTheme) return false;
+    window.panopticonTheme.setAccents(r.data);
+    const first = !appearanceLoaded;
+    appearanceLoaded = true;
+    const now = route();
+    if(first && now.view === 'settings' && now.page === 'theme' && window.panopticonSettings) window.panopticonSettings.open('theme', true);
+    return true;
+  }).catch(() => false);
 }
 
 function tile(p){
   const href = `#m=${encodeURIComponent(p.name || '')}`;
   const name = escapeHtml(p.name || '未命名面板');
-  if(p.kind === 'nightcord-status'){
-    const s = stateOf(p);
-    const targets = p.targets || [];
-    const down = targets.filter(t => t.status === 'down').length;
-    return `<a class="tile clickable state-${s === 'warn' ? 'warn' : s === 'caution' ? 'caution' : 'ok'}" href="${href}">
-      <div class="tile-inner"><div class="readings">
-        <div class="reading"><div class="t-value">${targets.length}</div><div class="t-label">目标</div></div>
-        <div class="reading"><div class="t-value">${down}</div><div class="t-label">故障</div></div></div>
-        <div class="tile-label"><span class="name">${name}</span></div></div></a>`;
-  }
-  const offline = noMetrics(p);
-  const s = offline ? 'offline' : (stateOf(p) || 'ok');
-  const m = machineMetrics(p);
-  const samples = tileHistory[p.name] || [];
-  const seenAt = p.qingyuan && p.qingyuan.seen_at;
-  const front = offline
-    ? `<div class="reading"><div class="t-value">离线</div><div class="t-label">最后上报 ${escapeHtml(fmtAgo(seenAt))}</div></div>`
-    : [['CPU', m.cpu], ['内存', m.mem], ['磁盘', m.disk]].map(([l, v]) =>
-        `<div class="reading"><div class="t-value">${escapeHtml(fmtPct(v))}</div><div class="t-label">${l}</div></div>`).join('');
-  return `<a class="tile clickable state-${s}" href="${href}">
+  const down = p.kind === 'nightcord-status' ? p.online === false
+                                             : isOffline(p) || noMetrics(p);
+  const state = stateOf(p);
+  const look = p.kind !== 'nightcord-status' && noMetrics(p) ? 'offline' : (state || 'ok');
+  const [chara, faces] = characterFor(p.name || '');
+  const face = faces[down || state === 'warn' ? 2 : state === 'caution' ? 1 : 0];
+  return `<a class="tile clickable state-${look}" href="${href}">
     <div class="tile-inner">
-      <div class="readings">${front}</div>
-      ${samples.length >= 2 ? sparkline(samples) : ''}
-      <div class="tile-label"><span class="name">${name}</span>${offline ? ''
-        : `<span class="seen">${escapeHtml(isOffline(p) ? stateText(p) : fmtAgo(seenAt))}</span>`}</div>
+      <div class="t-state">${down ? '离线' : '在线'}</div>
+      <div class="face">${escapeHtml(face)}</div>
+      <div class="tile-label"><span class="chara">${escapeHtml(chara)}</span><span class="name">${name}</span></div>
     </div>
   </a>`;
 }
@@ -457,8 +849,10 @@ document.addEventListener('pointerdown', e => {
   if(!t || reduceMotion.matches) return;
   const inner = t.querySelector('.tile-inner');
   const r = t.getBoundingClientRect();
-  const dx = (e.clientX - r.left) / r.width - 0.5;
-  const dy = (e.clientY - r.top) / r.height - 0.5;
+  // Clamped: under the 缩放 setting the pointer and the box may not share a coordinate space.
+  const clamp = v => Math.max(-0.5, Math.min(0.5, v));
+  const dx = clamp((e.clientX - r.left) / r.width - 0.5);
+  const dy = clamp((e.clientY - r.top) / r.height - 0.5);
   t.classList.add('pressed');
   inner.style.transform = `scale(0.97) rotateY(${(dx * 12).toFixed(2)}deg) rotateX(${(-dy * 12).toFixed(2)}deg)`;
   const release = () => {
@@ -621,6 +1015,12 @@ document.getElementById('content').addEventListener('click', e => {
   if(t){ const pre = t.nextElementSibling; pre.hidden = !pre.hidden; }
 });
 document.getElementById('content').addEventListener('change', e => {
+  if(e.target.id === 'overviewMetric'){
+    overviewMetric = e.target.value;
+    try{ localStorage.setItem(METRIC_KEY, overviewMetric); }catch(err){}
+    render(false);
+    return;
+  }
   if(e.target.name === 'range'){
     metricsRangeState[e.target.dataset.panel] = Number(e.target.value);
     loadChart(e.target.dataset.panel);
@@ -628,10 +1028,13 @@ document.getElementById('content').addEventListener('change', e => {
 });
 let cameFromList = false;
 document.getElementById('back').addEventListener('click', () => {
-  if(cameFromList) history.back(); else location.hash = '#p=1';
+  if(cameFromList) history.back();
+  else location.hash = route().view === 'settings' ? '#p=' + SETTINGS_PIVOT : '#p=1';
 });
 window.addEventListener('hashchange', () => {
-  if(route().view === 'detail'){ detailPivot = 0; cameFromList = true; }
+  const v = route().view;
+  if(v === 'detail'){ detailPivot = 0; cameFromList = true; }
+  if(v === 'settings') cameFromList = true;
   render(true);
 });
 // Swipe between pivot items (touch / pen only).
@@ -649,9 +1052,7 @@ window.addEventListener('hashchange', () => {
       if(!p) return;
       const n = detailPivots(p).length;
       detailPivot = (detailPivot + step + n) % n; render(true);
-    } else if(r.pivot + step === TOP_PIVOTS.length){
-      location.href = '/settings';
-    } else if(r.pivot + step >= 0){
+    } else if(r.pivot + step >= 0 && r.pivot + step < TOP_PIVOTS.length){
       location.hash = '#p=' + (r.pivot + step);
     }
   });
@@ -727,9 +1128,13 @@ document.getElementById('logout').addEventListener('click', async () => {
   location.href = '/login';
 });
 
+loadKaomoji();
+loadAppearance();
+
 render(false);
 refresh(true);
 setInterval(() => refresh(false), REFRESH_MS);
 </script>
+<script src="/static/settings.js"></script>
 </body>
 </html>

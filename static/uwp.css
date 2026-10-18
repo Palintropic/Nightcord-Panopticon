@@ -39,6 +39,14 @@
   /* Accent (project): 25時、ナイトコードで。's unit colour, the only hue used for affordance. */
   --SystemAccent:#884499;
   --SystemAccentPressed:rgb(136 68 153 / 0.8);  /* by eye, as PNS */
+  /* Surface colours (project): the overview curve, healthy tiles and the status bar each take
+     their own colour, picked in 设置 → 主题 and set inline on <html> by /static/theme.js with
+     a white or black foreground, whichever contrasts more. Each defaults to the accent. */
+  --CurveAccent:var(--SystemAccent);
+  --TileAccent:var(--SystemAccent);
+  --TileForeground:#ffffff;
+  --BarAccent:var(--SystemAccent);
+  --BarForeground:#ffffff;
 
   /* Semantic colours (project, same values as the PNS dashboard). One meaning each, never
      decoration: ok = healthy (deliberately the accent), caution = near a threshold,
@@ -67,7 +75,7 @@
   --control-min-height:32px;   /* TextControlThemeMinHeight */
   --pivot-header-height:48px;
   --list-item-min-height:40px;
-  --status-bar-height:40px;    /* AppBarThemeCompactHeight, same as PNS's command bar */
+  --status-bar-height:32px;    /* project: 40 (AppBarThemeCompactHeight) read too heavy under the denser overview */
 
   --decelerate:cubic-bezier(0.1,0.9,0.2,1);
   color-scheme:dark;
@@ -111,6 +119,13 @@
    (same as PNS). */
 @media (min-width:640px){ :root{ --page-margin:24px } }
 @media (min-width:1008px){ :root{ --page-margin:40px } }
+/* Inside the shell the same breakpoints follow the shell's own width, which honours the 缩放
+   setting (CSS zoom on <html>, set by /static/theme.js); @media keeps reading the unzoomed
+   window. The :root values above still serve pages without a shell (login). */
+.shell{container-type:inline-size}
+.shell > *{--page-margin:12px}
+@container (min-width:640px){ .shell > *{ --page-margin:24px } }
+@container (min-width:1008px){ .shell > *{ --page-margin:40px } }
 
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -125,7 +140,7 @@ code{font:12px/16px ui-monospace,Menlo,Consolas,monospace}
 input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 
 /* ── Shell ── */
-.shell{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.shell{height:100%;display:flex;flex-direction:column;overflow:hidden}
 .pivot{flex:0 0 auto;padding-top:var(--page-margin)}
 /* PivotTitleFontSize 14 Bold → SemiBold (Selawik has no Bold). Shown because nothing else on
    screen names the app. */
@@ -146,20 +161,20 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 @keyframes enter{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:none}}
 .entering{animation:enter 300ms var(--decelerate) both}
 
-/* Status bar: the VS Code element. Accent fill, white Control text, items lighten on hover.
+/* Status bar: the VS Code element. Bar colour fill, Control text, items lighten on hover.
    The leftmost segment turns warn-red with a count when something needs attention. */
 .status-bar{flex:0 0 var(--status-bar-height);display:flex;align-items:stretch;
-            background:var(--SystemAccent);color:var(--SystemChromeWhite);font:var(--type-control)}
+            background:var(--BarAccent);color:var(--BarForeground);font:var(--type-control)}
 .status-item{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:0 var(--gutter);white-space:nowrap;color:inherit;text-decoration:none}
 /* The summary is the one item allowed to shrink: long notes end in an ellipsis (full text in its
    title) so the commands on the right are never pushed off a phone screen. */
 .status-summary{flex:0 1 auto;min-width:0}
 .status-summary > span{overflow:hidden;text-overflow:ellipsis}
 button.status-item:hover,a.status-item:hover{background:rgb(255 255 255 / 0.12)} /* by eye */
-.status-alert{background:var(--warn)}
+.status-alert{background:var(--warn);color:#ffffff}
 .status-alert[hidden]{display:none}
 .status-spacer{flex:1}
-@media (max-width:640px){ .status-optional{display:none} }
+@container (max-width:640px){ .status-optional{display:none} }
 
 /* ── Text ── */
 .group{margin-top:var(--group-gap)}

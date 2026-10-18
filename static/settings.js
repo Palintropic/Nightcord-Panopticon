@@ -1,243 +1,46 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>设置 · Panopticon</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="/static/theme.js"></script>
-<link rel="stylesheet" href="/static/uwp.css">
-<style>
-  /* Settings-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
-  .page{max-width:760px}   /* by eye: same measure as the form grid */
-  .page[hidden]{display:none}
-  .panel-card{padding:12px 0;border-bottom:1px solid var(--SystemBaseLow)}
-  .panel-card:last-child{border-bottom:0}
-  .card-head{display:flex;justify-content:space-between;align-items:center;gap:var(--gutter);margin-bottom:var(--header-gap)}
-  /* Settings deliberately keep a Save command for fields you type into (secrets, addresses):
-     a deviation from the Windows 10 Settings app, where every change applies at once. */
-  .save-row{display:flex;align-items:center;gap:var(--gutter);margin-top:var(--group-gap)}
-  .save-msg.ok{color:var(--ok)} .save-msg.err{color:var(--warn)}
-  #feishuTestMsg.ok{color:var(--ok)} #feishuTestMsg.err{color:var(--warn)}
-  #deployMsg.ok{color:var(--ok)} #deployMsg.err{color:var(--warn)}
-  .inline{display:flex;align-items:center;gap:var(--gutter);flex-wrap:wrap}
-  .radios.stacked{flex-direction:column;align-items:flex-start}   /* as Windows 10 Settings' theme choice */
-</style>
-</head>
-<body>
-<div class="shell">
-  <header class="pivot">
-    <div class="pivot-title">
-      <a class="back" href="/" aria-label="返回看板">‹</a>
-      <span>设置</span>
-    </div>
-    <nav class="pivot-headers" id="pivotHeaders" role="tablist">
-      <button class="pivot-header-item" role="tab" data-page="appearance">外观</button>
-      <button class="pivot-header-item" role="tab" data-page="notify">通知</button>
-      <button class="pivot-header-item" role="tab" data-page="agents">青源机器</button>
-      <button class="pivot-header-item" role="tab" data-page="deploy">部署</button>
-      <button class="pivot-header-item" role="tab" data-page="login">登录</button>
-      <button class="pivot-header-item" role="tab" data-page="panels">宝塔面板</button>
-    </nav>
-  </header>
-
-  <main class="content" id="content">
-    <div class="notice" id="oobeBanner" style="display:none;max-width:760px">
-      这是首次配置：先到「登录」设好密码，再到「部署」给机器装青源 agent。之后这个页面一直在 <code>/settings</code>。
-      <strong>如果看板打算公网暴露，请先完成登录密码</strong>，否则这里对任何能访问到的人都是开放的。
-    </div>
-
-    <!-- 外观 -->
-    <section class="page" data-page="appearance">
-      <div class="group">
-        <div class="group-header">主题</div>
-        <div class="description">只对这个浏览器生效，换一台设备要重新选。选了马上生效，不用保存。</div>
-        <div class="radios stacked" role="radiogroup" aria-label="主题">
-          <label class="radio"><input type="radio" name="theme" value="light"> 浅色</label>
-          <label class="radio"><input type="radio" name="theme" value="dark"> 深色</label>
-          <label class="radio"><input type="radio" name="theme" value="system"> 使用系统设置</label>
-        </div>
-      </div>
-    </section>
-
-    <!-- 通知 -->
-    <section class="page" data-page="notify" hidden>
-      <div class="group">
-        <div class="group-header">告警阈值</div>
-        <div class="description">CPU、内存、磁盘使用率超过这个百分比就告警；看板上的红色也用同一套阈值。</div>
-        <div class="form-grid">
-          <label class="field">CPU %<input type="number" id="thCpu" value="90"></label>
-          <label class="field">内存 %<input type="number" id="thMem" value="90"></label>
-          <label class="field">磁盘 %<input type="number" id="thDisk" value="85"></label>
-          <label class="field">同一条告警最小推送间隔（秒）<input type="number" id="cooldown" value="600"></label>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-header">飞书</div>
-        <div class="description">群设置 → 群机器人 → 添加"自定义机器人"，把 Webhook 地址填在这里。</div>
-        <label class="check"><input type="checkbox" id="feishuEnabled"> 开启飞书推送</label>
-        <div class="form-grid">
-          <label class="field">Webhook 地址
-            <input type="password" id="feishuWebhook" placeholder="留空则不修改">
-            <span class="field-hint" id="feishuHint"></span>
-          </label>
-        </div>
-        <div class="inline">
-          <button type="button" class="btn" onclick="testFeishu()">发送测试通知</button>
-          <span id="feishuTestMsg" class="caption">测试用的是已保存的配置，改了 Webhook 要先保存。</span>
-        </div>
-      </div>
-
-      <div class="group">
-        <div class="group-header">邮件</div>
-        <label class="check"><input type="checkbox" id="emailEnabled"> 开启邮件推送</label>
-        <div class="form-grid">
-          <label class="field">SMTP 服务器<input type="text" id="emailHost" placeholder="smtp.qq.com"></label>
-          <label class="field">端口<input type="number" id="emailPort" value="465"></label>
-        </div>
-        <label class="check"><input type="checkbox" id="emailSsl"> 使用 SSL（465 端口通常勾选）</label>
-        <label class="check"><input type="checkbox" id="emailTls"> 使用 STARTTLS（587 端口通常勾选）</label>
-        <div class="form-grid">
-          <label class="field">发信账号<input type="text" id="emailUsername" placeholder="you@qq.com"></label>
-          <label class="field">SMTP 授权码
-            <input type="password" id="emailPassword" placeholder="留空则不修改">
-            <span class="field-hint" id="emailHint"></span>
-          </label>
-          <label class="field">发件人<input type="text" id="emailFrom" placeholder="you@qq.com"></label>
-          <label class="field">收件人（多个用逗号分隔）<input type="text" id="emailTo" placeholder="a@b.com, c@d.com"></label>
-        </div>
-      </div>
-      <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
-    </section>
-
-    <!-- 青源机器 -->
-    <section class="page" data-page="agents" hidden>
-      <div class="group">
-        <div class="description">上报过的机器会一直被盯着，离线超过 3 分钟就告警。机器退役或卸掉 agent 后在这里移除；
-          移除后如果它又开始上报，会自动回到列表里。</div>
-        <div id="agentList"></div>
-      </div>
-    </section>
-
-    <!-- 部署 -->
-    <section class="page" data-page="deploy" hidden>
-      <div class="group">
-        <div class="group-header">一键部署青源 agent</div>
-        <div class="description">填目标服务器的 SSH 信息，自动装好青源 agent 并注册成 systemd 常驻服务。
-          密码只在这次安装里用一次；勾选"记住密码"才会加密保存，方便以后一键重装。</div>
-        <div class="form-grid">
-          <label class="field">服务器 IP<input type="text" id="deployIp" placeholder="10.10.0.5"></label>
-          <label class="field">端口<input type="number" id="deployPort" value="22"></label>
-          <label class="field">SSH 账号<input type="text" id="deployUser" value="root"></label>
-          <label class="field">密码<input type="password" id="deployPassword" placeholder="SSH 登录密码"></label>
-        </div>
-        <div class="form-grid">
-          <label class="field">这台机器是不是某个宝塔面板？
-            <select id="deployBindPanel"><option value="">不绑定（用远端 hostname 当名字）</option></select>
-            <span class="field-hint">选了的话青源上报会用那个面板的名字，两边数据显示在同一张卡片上。</span>
-          </label>
-        </div>
-        <label class="check"><input type="checkbox" id="deployRemember"> 记住这台服务器的密码（加密保存）</label>
-        <div class="inline" style="margin-top:var(--gutter)">
-          <button class="btn btn-accent" onclick="deployAgent()">一键安装</button>
-          <span id="deployMsg" class="caption"></span>
-        </div>
-        <pre id="deployLog" class="log" hidden style="margin-top:var(--gutter)"></pre>
-      </div>
-      <div class="group">
-        <div class="group-header">已记住密码的服务器</div>
-        <div id="agentHosts"></div>
-      </div>
-    </section>
-
-    <!-- 登录 -->
-    <section class="page" data-page="login" hidden>
-      <div class="group">
-        <div class="group-header">密码</div>
-        <div class="description">看板如果要公网暴露，务必开启。密码留空表示不修改。</div>
-        <label class="check"><input type="checkbox" id="authEnabled"> 开启登录验证</label>
-        <div class="form-grid">
-          <label class="field">用户名<input type="text" id="authUsername" placeholder="mizuki"></label>
-          <label class="field">新密码
-            <input type="password" id="authPassword" placeholder="留空则不修改">
-            <span class="field-hint" id="authPasswordHint"></span>
-          </label>
-          <label class="field">连续失败几次后锁定<input type="number" id="authMaxAttempts" value="5"></label>
-          <label class="field">锁定时长（秒）<input type="number" id="authLockout" value="900"></label>
-        </div>
-        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
-      </div>
-      <div class="group">
-        <div class="group-header">Passkey</div>
-        <div class="description">用设备生物识别或安全密钥登录，密码登录照样保留。需要通过 HTTPS 访问（本机 localhost 除外）。</div>
-        <div id="passkeyList"></div>
-        <div class="inline" style="margin-top:var(--gutter)">
-          <button class="btn" onclick="addPasskey()">添加本设备的 Passkey</button>
-          <span class="caption" id="passkeyHint"></span>
-        </div>
-      </div>
-    </section>
-
-    <!-- 宝塔面板 -->
-    <section class="page" data-page="panels" hidden>
-      <div class="group">
-        <div class="description">可选数据源：宝塔面板的地址和 API 密钥。地址建议填 WireGuard 内网地址（如 <code>http://10.10.0.2:18101</code>）。
-          只用青源 agent 的话这里留空就行。</div>
-        <div id="panels"></div>
-        <button class="btn" onclick="addPanelRow()" style="margin-top:var(--gutter)">添加面板</button>
-        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
-      </div>
-    </section>
-  </main>
-
-  <footer class="status-bar">
-    <a class="status-item" href="/">‹ 看板</a>
-    <span class="status-item" id="statusSummary"></span>
-    <span class="status-spacer"></span>
-    <button class="status-item" id="logout">退出登录</button>
-  </footer>
-</div>
-
-<script>
+// Settings pages of the dashboard (static/index.html, #settingsView).
 const SECRET_PLACEHOLDER = '••••••••';
-const PAGES = ['appearance', 'notify', 'agents', 'deploy', 'login', 'panels'];
+// Driven by the dashboard (index.html): its 设置 pivot item lists the pages below, and each one
+// opens as #s=<key>. Nothing is fetched until settings are first opened.
+const settings = window.panopticonSettings = {
+  firstRun: false,
+  loaded: false,
+  ensureLoaded(){
+    if(settings.loaded) return;
+    settings.loaded = true;
+    load();
+    loadAgentHosts();
+    loadAgentList();
+    loadPasskeys();
+  },
+  // fresh = the page was just opened (not a background redraw): live lists reload.
+  open(page, fresh){
+    const first = !settings.loaded;
+    settings.ensureLoaded();
+    if(page === 'theme'){
+      renderAccents(fresh && !accentResyncing);
+      if(accentResyncing) resyncAccents();
+      else if(fresh && !appearanceLoaded) loadAppearance().then(ok => { if(!ok) loadFailed('accentMsg'); });
+    }
+    if(page === 'kaomoji'){
+      renderKaomoji(fresh && !kaomojiResyncing);
+      if(kaomojiResyncing) resyncKaomoji();
+      else if(fresh && !kaomojiLoaded) loadKaomoji().then(ok => { if(!ok) loadFailed('kaomojiMsg'); });
+    }
+    if(page === 'agents' && fresh && !first) loadAgentList();
+  },
+};
 
-// ---------- pages (Pivot) ----------
-function currentPage(){
-  const m = location.hash.match(/^#s=(\w+)$/);
-  return m && PAGES.includes(m[1]) ? m[1] : PAGES[0];
-}
-function showPage(animate){
-  const page = currentPage();
-  document.querySelectorAll('.pivot-header-item').forEach(b => b.setAttribute('aria-selected', String(b.dataset.page === page)));
-  document.querySelectorAll('section.page').forEach(s => {
-    const on = s.dataset.page === page;
-    s.hidden = !on;
-    s.classList.toggle('entering', on && animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  });
-  document.getElementById('content').scrollTop = 0;
-}
-document.getElementById('pivotHeaders').addEventListener('click', e => {
-  const b = e.target.closest('[data-page]');
-  if(b) location.hash = '#s=' + b.dataset.page;
-});
-window.addEventListener('hashchange', () => showPage(true));
-// Swipe between pages (touch / pen only).
-(() => {
-  let sx = null, sy = null;
-  const c = document.getElementById('content');
-  c.addEventListener('pointerdown', e => { if(e.pointerType !== 'mouse' && !e.target.closest('input,select,textarea')){ sx = e.clientX; sy = e.clientY; } });
-  c.addEventListener('pointerup', e => {
-    if(sx === null) return;
-    const dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
-    if(Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-    const i = PAGES.indexOf(currentPage()) + (dx < 0 ? 1 : -1);
-    if(i >= 0 && i < PAGES.length) location.hash = '#s=' + PAGES[i];
-  });
-})();
+const RESYNC_FAILED = '没保存上，也没能读回服务器上的设置；过一会儿自动重试，没保存的内容先留着';
+const RESYNC_DONE = '已经读回服务器上的设置，没保存的内容还在，可以再保存一次';
 
-// ---------- 外观 ----------
-// Applies on selection, like Windows 10 Settings; stored per browser by /static/theme.js.
+function loadFailed(msgId){
+  const msg = document.getElementById(msgId);
+  msg.className = 'err'; msg.textContent = '读取服务器上的设置失败，刷新页面再试';
+}
+
+// ---------- 主题 ----------
+// Mode applies on selection, like Windows 10 Settings; stored per browser by /static/theme.js.
 function syncThemeRadios(){
   const v = window.panopticonTheme.get();
   document.querySelectorAll('input[name="theme"]').forEach(r => { r.checked = r.value === v; });
@@ -245,8 +48,292 @@ function syncThemeRadios(){
 document.querySelectorAll('input[name="theme"]').forEach(r => {
   r.addEventListener('change', () => { if(r.checked) window.panopticonTheme.set(r.value); });
 });
-window.addEventListener('storage', syncThemeRadios);
+// 缩放: also per browser, applied by theme.js as CSS zoom on <html>.
+function syncScale(){
+  const current = window.panopticonTheme.getScale();
+  document.getElementById('uiScale').innerHTML = window.panopticonTheme.SCALES.map(v =>
+    `<option value="${v}"${v === current ? ' selected' : ''}>${v}%${v === 100 ? '（默认）' : ''}</option>`).join('');
+}
+document.getElementById('uiScale').addEventListener('change', e => window.panopticonTheme.setScale(Number(e.target.value)));
+window.addEventListener('storage', () => { syncThemeRadios(); syncScale(); renderAccents(); });
 syncThemeRadios();
+syncScale();
+
+// Surface colours are saved on the server the moment one is picked (POST /api/appearance), so
+// every device shows the same. Swatches: 25 時's purple, then the Windows 10 accent palette.
+const DEFAULT_ACCENT = '#884499';
+const ACCENT_SWATCHES = ['#884499',
+  '#ffb900', '#ff8c00', '#f7630c', '#ca5010', '#da3b01', '#ef6950',
+  '#d13438', '#ff4343', '#e74856', '#e81123', '#ea005e', '#c30052',
+  '#e3008c', '#bf0077', '#c239b3', '#9a0089', '#0078d7', '#0063b1',
+  '#8e8cd8', '#6b69d6', '#8764b8', '#744da9', '#b146c2', '#881798',
+  '#0099bc', '#2d7d9a', '#00b7c3', '#038387', '#00b294', '#018574',
+  '#00cc6a', '#10893e', '#7a7574', '#5d5a58', '#68768a', '#515c6b',
+  '#567c73', '#486860', '#498205', '#107c10', '#767676', '#4c4a48',
+  '#69797e', '#4a5459', '#647c64', '#525e54', '#847545', '#7e735f'];
+// One per unit: tile in one colour, curve and bar in members' colours (picked so neither sits
+// next to the warn red or the caution amber).
+const ACCENT_PRESETS = [
+  {name:'默认（25 時紫）', tile:'#884499', curve:'#884499', bar:'#884499'},
+  {name:'25時、ナイトコードで。', tile:'#884499', curve:'#ddaacc', bar:'#8888cc'},
+  {name:'Leo/need', tile:'#4455dd', curve:'#bbdd22', bar:'#33aaee'},
+  {name:'MORE MORE JUMP!', tile:'#88dd44', curve:'#ffaacc', bar:'#99ccff'},
+  {name:'Vivid BAD SQUAD', tile:'#0077dd', curve:'#ff6699', bar:'#00bbdd'},
+  {name:'ワンダーランズ×ショウタイム', tile:'#bb88ee', curve:'#ff66bb', bar:'#ff9900'},
+];
+const ACCENT_PARTS = ['tile', 'curve', 'bar'];
+
+function currentAccents(){
+  const a = window.panopticonTheme.getAccents();
+  const out = {};
+  ACCENT_PARTS.forEach(k => { out[k] = a[k] || DEFAULT_ACCENT; });
+  return out;
+}
+
+// Background redraws (force false) leave a custom field alone while it is focused or holds an
+// unapplied value. force true rewrites all three (page opened, preset picked); a list of parts
+// rewrites only those (a swatch or custom colour for that part was picked).
+function renderAccents(force){
+  const a = currentAccents();
+  const fg = window.panopticonTheme.foreground;
+  // Until the saved colours arrive (appearanceLoaded, index.html) nothing here can save.
+  const off = appearanceLoaded && !accentResyncing ? '' : ' disabled';
+  const msg = document.getElementById('accentMsg');
+  if(!appearanceLoaded && !msg.textContent){ msg.className = 'caption'; msg.textContent = '正在读取服务器上的配色…'; }
+  if(appearanceLoaded && msg.textContent === '正在读取服务器上的配色…') msg.textContent = '';
+  document.getElementById('accentPresets').innerHTML = ACCENT_PRESETS.map((pr, i) =>
+    `<button class="preset" data-preset="${i}"${off}><span class="chips">${ACCENT_PARTS.map(k =>
+      `<i style="background:${pr[k]}"></i>`).join('')}</span><span>${escapeHtml(pr.name)}</span></button>`).join('');
+  ACCENT_PARTS.forEach(k => {
+    document.querySelector(`.swatches[data-accent="${k}"]`).innerHTML = ACCENT_SWATCHES.map(c =>
+      `<button class="swatch" role="radio" aria-checked="${c === a[k]}" aria-label="${c}" title="${c}"
+        data-part="${k}" data-colour="${c}" style="background:${c};color:${fg(c)}"${off}></button>`).join('');
+    const custom = document.querySelector(`[data-accent-custom="${k}"]`);
+    const input = custom.querySelector('input');
+    const rewrite = force === true || (Array.isArray(force) && force.includes(k));
+    if(rewrite || !(custom.contains(document.activeElement) || (input && input.dataset.dirty))){
+      custom.innerHTML = `<span class="chip" style="background:${a[k]}"></span>
+        <input type="text" value="${a[k]}" aria-label="自定义颜色" maxlength="7" spellcheck="false"${off}>
+        <button class="btn" data-custom-apply="${k}"${off}>应用</button>`;
+    } else {
+      // Kept as typed, but it still follows the page's state (locked while loading or resyncing).
+      custom.querySelectorAll('input, button').forEach(el => { el.disabled = !!off; });
+    }
+  });
+}
+
+// Saves of one section go out one at a time, each carrying the section as it stands when it is
+// sent, so the last pick is what the server keeps however the network orders the replies.
+// send() resolves {ok, data, error}; done(result, last) runs after each, last = none queued behind,
+// and the next save waits for whatever done() returns (a resync after a failure). dropQueued()
+// cancels the saves still waiting: after a failure they were built on the change that failed.
+function makeSaveQueue(){
+  let tail = Promise.resolve();
+  let pending = 0;
+  let generation = 0;
+  const queue = (send, done) => {
+    pending++;
+    const gen = generation;
+    const run = tail
+      .then(() => gen === generation ? send() : {ok:false, dropped:true})
+      .then(r => {
+        pending--;
+        return Promise.resolve(r.dropped ? null : done(r, pending === 0)).then(() => r.ok);
+      });
+    tail = run.catch(() => {});
+    return run;
+  };
+  queue.dropQueued = () => { generation++; };
+  return queue;
+}
+async function postJson(url, body){
+  try{
+    const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+    const data = await res.json().catch(() => ({}));
+    return res.ok ? {ok:true, data} : {ok:false, error:(data.errors || [data.error || `HTTP ${res.status}`]).join('；')};
+  }catch(e){
+    return {ok:false, error:String(e)};
+  }
+}
+function setMsg(id, cls, text){
+  const msg = document.getElementById(id);
+  msg.className = cls; msg.textContent = text;
+}
+
+// After a failed save the page takes no new picks until the server's copy is back. A failed
+// reload keeps it that way and is retried on every background redraw (open() below); a typed
+// custom colour is kept throughout.
+let accentResyncing = false;
+let accentReload = null;
+function resyncAccents(){
+  accentResyncing = true;
+  renderAccents(false);
+  if(accentReload) return accentReload;
+  accentReload = loadAppearance().then(ok => {
+    accentReload = null;
+    if(ok){
+      accentResyncing = false;
+      if(document.getElementById('accentMsg').textContent === RESYNC_FAILED) setMsg('accentMsg', 'caption', RESYNC_DONE);
+    } else {
+      setMsg('accentMsg', 'err', RESYNC_FAILED);
+    }
+    renderAccents(false);
+  });
+  return accentReload;
+}
+const accentQueue = makeSaveQueue();
+function saveAccents(next){
+  if(!appearanceLoaded || accentResyncing) return;
+  window.panopticonTheme.setAccents({...currentAccents(), ...next});   // shows at once; the server copy follows
+  renderAccents(Object.keys(next));
+  setMsg('accentMsg', 'caption', '保存中…');
+  accentQueue(() => postJson('/api/appearance', currentAccents()), (r, last) => {
+    if(!r.ok){
+      setMsg('accentMsg', 'err', '没保存上：' + r.error);
+      // Show what the server really holds instead of the colours that did not save; the queue
+      // waits for this before anything else goes out.
+      accentQueue.dropQueued();
+      return resyncAccents();
+    }
+    if(last && document.getElementById('accentMsg').className !== 'err') setMsg('accentMsg', 'caption', '已保存 ✓');
+  });
+}
+
+document.getElementById('settingsView').addEventListener('click', e => {
+  const sw = e.target.closest('.swatch');
+  if(sw){ saveAccents({[sw.dataset.part]: sw.dataset.colour}); return; }
+  const pr = e.target.closest('[data-preset]');
+  if(pr){
+    const p = ACCENT_PRESETS[Number(pr.dataset.preset)];
+    saveAccents({tile:p.tile, curve:p.curve, bar:p.bar});
+    return;
+  }
+  const ap = e.target.closest('[data-custom-apply]');
+  if(ap) applyCustom(ap.dataset.customApply);
+});
+document.getElementById('settingsView').addEventListener('input', e => {
+  if(e.target.closest('[data-accent-custom]')) e.target.dataset.dirty = '1';
+});
+document.getElementById('settingsView').addEventListener('keydown', e => {
+  const wrap = e.target.closest('[data-accent-custom]');
+  if(wrap && e.key === 'Enter') applyCustom(wrap.dataset.accentCustom);
+});
+function applyCustom(part){
+  const input = document.querySelector(`[data-accent-custom="${part}"] input`);
+  const v = input.value.trim().replace(/^#?/, '#').toLowerCase();
+  const msg = document.getElementById('accentMsg');
+  if(!/^#[0-9a-f]{6}$/.test(v)){
+    msg.className = 'err'; msg.textContent = '自定义颜色要写成 #rrggbb，比如 #884499';
+    return;
+  }
+  input.blur();
+  saveAccents({[part]: v});
+}
+
+// ---------- 颜文字 ----------
+// The character table (CHARACTERS) and the saved choices (kaomojiConfig) live in index.html,
+// which draws the tiles. Picking a character saves at once; typed faces wait for 保存.
+function renderKaomoji(fresh){
+  // Until the saved choices arrive (kaomojiLoaded, index.html) there is nothing to edit: an empty
+  // form saved now would wipe them.
+  document.getElementById('kaomojiSave').disabled = !kaomojiLoaded || kaomojiResyncing;
+  document.getElementById('kaomojiReset').disabled = !kaomojiLoaded || kaomojiResyncing;
+  if(!kaomojiLoaded){
+    document.getElementById('kaomojiAssign').innerHTML = '<div class="empty-hint">读取中…</div>';
+    document.getElementById('kaomojiFaces').innerHTML = '<div class="empty-hint">读取中…</div>';
+    return;
+  }
+  const msg = document.getElementById('kaomojiMsg');
+  if(msg.className === 'err' && msg.textContent.startsWith('读取')) msg.textContent = '';
+  const assign = kaomojiConfig.assign;
+  const machines = panels().map(p => p.name).filter(Boolean);
+  const options = name => {
+    const picked = own(assign, name) ? assign[name] : '';
+    return `<option value=""${picked ? '' : ' selected'}>自动（${escapeHtml(autoCharacterFor(name)[0])}）</option>` +
+      CHARACTERS.map(([c]) => `<option value="${escapeAttr(c)}"${c === picked ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+  };
+  const wrap = document.getElementById('kaomojiAssign');
+  if(!wrap.contains(document.activeElement)){
+    wrap.innerHTML = machines.length ? machines.map(name => `<label class="assign-row"><span>${escapeHtml(name)}</span>
+        <select data-assign="${escapeAttr(name)}"${kaomojiResyncing ? ' disabled' : ''}>${options(name)}</select></label>`).join('')
+      : '<div class="empty-hint">还没有机器。</div>';
+  }
+  // The face fields are only rebuilt when the page is opened, so a refresh never eats typing.
+  if(!fresh && document.querySelector('#kaomojiFaces .face-row')) return;
+  document.getElementById('kaomojiFaces').innerHTML = CHARACTERS.map(([c, defaults]) => {
+    const custom = own(kaomojiConfig.faces, c) ? kaomojiConfig.faces[c] : [];
+    return `<div class="face-row" data-chara="${escapeAttr(c)}"><span class="who">${escapeHtml(c)}</span>${defaults.map((d, i) =>
+      `<input type="text" maxlength="24" spellcheck="false" aria-label="${escapeAttr(c)} ${['一切正常', '接近阈值', '离线或需要关注'][i]}"
+        placeholder="${escapeAttr(d)}" value="${escapeAttr(custom[i] || '')}">`).join('')}</div>`;
+  }).join('');
+}
+
+function collectFaces(){
+  const faces = {};
+  document.querySelectorAll('#kaomojiFaces .face-row').forEach(row => {
+    const triple = Array.from(row.querySelectorAll('input')).map(i => i.value.trim());
+    if(triple.some(Boolean)) faces[row.dataset.chara] = triple;
+  });
+  return faces;
+}
+
+// After a failed save: drop any optimistic change and show what the server really holds. Until
+// then the pickers and buttons are disabled; typed faces stay as typed so they can be saved again.
+// A failed reload keeps it that way and is retried on every background redraw (open() below).
+let kaomojiResyncing = false;
+let kaomojiReload = null;
+function resyncKaomoji(){
+  kaomojiResyncing = true;
+  if(document.activeElement && document.activeElement.closest('#kaomojiAssign')) document.activeElement.blur();
+  renderKaomoji(false);
+  if(kaomojiReload) return kaomojiReload;
+  kaomojiReload = loadKaomoji().then(ok => {
+    kaomojiReload = null;
+    if(ok){
+      kaomojiResyncing = false;
+      if(document.getElementById('kaomojiMsg').textContent === RESYNC_FAILED) setMsg('kaomojiMsg', 'caption', RESYNC_DONE);
+    } else {
+      setMsg('kaomojiMsg', 'err', RESYNC_FAILED);
+    }
+    renderKaomoji(false);
+  });
+  return kaomojiReload;
+}
+
+// The change is recorded at once, so a save made before this one is answered builds on it; the
+// queue then sends the whole section as it stands. Resolves to whether this save landed.
+const kaomojiQueue = makeSaveQueue();
+function saveKaomoji(update){
+  if(!kaomojiLoaded || kaomojiResyncing) return Promise.resolve(false);
+  kaomojiConfig = {...kaomojiConfig, ...update};
+  setMsg('kaomojiMsg', 'caption', '保存中…');
+  return kaomojiQueue(() => postJson('/api/kaomoji', kaomojiConfig), (r, last) => {
+    if(!r.ok){
+      setMsg('kaomojiMsg', 'err', '没保存上：' + r.error);
+      kaomojiQueue.dropQueued();
+      return resyncKaomoji();   // the queue waits for this before anything else goes out
+    }
+    // An earlier reply would roll back changes still queued behind it; only the last one applies.
+    if(last){
+      setKaomojiConfig(r.data);
+      if(document.getElementById('kaomojiMsg').className !== 'err') setMsg('kaomojiMsg', 'ok', '已保存 ✓');
+    }
+  });
+}
+
+document.getElementById('kaomojiAssign').addEventListener('change', e => {
+  const sel = e.target.closest('[data-assign]');
+  if(!sel || !kaomojiLoaded || kaomojiResyncing) return;
+  const assign = {...kaomojiConfig.assign};
+  if(sel.value) assign[sel.dataset.assign] = sel.value; else delete assign[sel.dataset.assign];
+  // Face fields not yet saved stay as typed; only the picks change.
+  saveKaomoji({assign});
+});
+document.getElementById('kaomojiSave').addEventListener('click', () => saveKaomoji({faces:collectFaces()}));
+document.getElementById('kaomojiReset').addEventListener('click', async () => {
+  if(!confirm('把 20 个人的表情全部恢复成默认的？（谁看哪台机器不受影响）')) return;
+  if(await saveKaomoji({faces:{}})) renderKaomoji(true);
+});
 
 // ---------- 宝塔面板 ----------
 function panelRowHtml(p){
@@ -266,10 +353,6 @@ function panelRowHtml(p){
 
 function addPanelRow(p){
   document.getElementById('panels').insertAdjacentHTML('beforeend', panelRowHtml(p));
-}
-
-function escapeAttr(s){
-  return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 // ---------- Passkey ----------
@@ -411,11 +494,14 @@ async function load(){
 
   // First run = nothing configured yet: no password and no data source (no BT panel, no agent has
   // ever reported, Nightcord-Status off). Checked after the form is filled, so it never holds up saving.
-  const banner = document.getElementById('oobeBanner');
-  banner.style.display = 'none';
+  let firstRun = false;
   if(!da.has_password && !(cfg.panels || []).length && !cfg.nightcord_status_enabled){
     const agents = await fetch('/api/agents').then(r => r.ok ? r.json() : {agents: []}).catch(() => ({agents: []}));
-    if(!(agents.agents || []).length) banner.style.display = 'block';
+    firstRun = !(agents.agents || []).length;
+  }
+  if(firstRun !== settings.firstRun){
+    settings.firstRun = firstRun;
+    if(typeof settingsChanged === 'function') settingsChanged();
   }
 }
 
@@ -501,8 +587,6 @@ async function loadAgentList(){
   const data = await res.json();
   const wrap = document.getElementById('agentList');
   const agents = data.agents || [];
-  const online = agents.filter(a => a.online).length;
-  document.getElementById('statusSummary').textContent = agents.length ? `${online} / ${agents.length} 在线` : '';
   if(!agents.length){
     wrap.innerHTML = '<div class="empty-hint">还没有机器上报过。</div>';
     return;
@@ -662,17 +746,3 @@ async function deleteHost(id){
   await fetch(`/api/agent/hosts/${encodeURIComponent(id)}`, {method: 'DELETE'});
   await loadAgentHosts();
 }
-
-document.getElementById('logout').addEventListener('click', async () => {
-  await fetch('/logout', {method:'POST'});
-  location.href = '/login';
-});
-
-showPage(false);
-load();
-loadAgentHosts();
-loadAgentList();
-loadPasskeys();
-</script>
-</body>
-</html>

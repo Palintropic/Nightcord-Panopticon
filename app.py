@@ -24,7 +24,7 @@ from bt_client import BTClient
 from nightcord_status_client import NightcordStatusClient
 from notifier import Notifier, evaluate_alerts, plan_agent_alerts
 from auth import BruteForceGuard, get_client_ip
-from config_editor import redact_for_display, merge_submitted
+from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance, kaomoji_of, clean_kaomoji
 from agent_deploy import deploy_agent, AgentDeployError
 import agent_hosts
 from config_store import load_yaml, save_yaml, update_yaml
@@ -41,7 +41,10 @@ metrics_store.init_db()
 _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实际阈值以 config.yaml 为准（见 enforce_auth）
 
 # 不需要登录就能访问的路由：登录页本身，以及登录相关的两个 API（否则没法登录）
-PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify"}
+# setup_page / settings_page 只回一段固定的转发脚本（见 _SETTINGS_FORWARD），不带任何数据；放行是为了
+# 让旧书签的 #s=... 先在浏览器里转成看板地址，没登录的话再由看板被踢去登录页，# 后面那段一路带着。
+PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify",
+                    "setup_page", "settings_page"}
 
 # 远程数据源（宝塔面板、Nightcord-Status）的采集结果缓存。远程采集可能很慢（宝塔接口串行，
 # 一台没响应就要几十秒），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
@@ -653,16 +656,33 @@ def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
+# 设置已经并进看板：设置列表是 /#p=5，各页是 /#s=<页名>。/setup 和 /settings 留着转过去，
+# 旧书签和文档里的地址照样能用。旧地址可能带着 #s=notify 这种页名，# 后面的部分浏览器不发给
+# 服务器，HTTP 跳转也会被 Location 里的 # 盖掉，所以回一小段脚本在浏览器里转：认识的页名照旧
+# 打开（以前的「外观」现在叫 theme），其它一律去设置列表，首次配置的提示也在那里。
+_SETTINGS_FORWARD = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>设置 · Panopticon</title>
+<script>
+(function(){
+  var pages = {appearance:'theme', theme:'theme', kaomoji:'kaomoji', notify:'notify', agents:'agents',
+               deploy:'deploy', login:'login', panels:'panels'};
+  var m = location.hash.match(/^#s=(\\w+)$/);
+  var key = m && Object.prototype.hasOwnProperty.call(pages, m[1]) ? pages[m[1]] : null;
+  location.replace('/' + (key ? '#s=' + key : '#p=5'));
+})();
+</script></head>
+<body><a href="/#p=5">打开设置</a></body></html>
+"""
+
+
 @app.route("/setup")
 def setup_page():
-    # /setup 和 /settings 是同一个页面：面板列表为空时它就是"首次配置向导"，
-    # 已经配置过之后就是普通的设置页，逻辑都在前端 JS 里根据 GET /api/config 的返回判断。
-    return send_from_directory(app.static_folder, "settings.html")
+    return Response(_SETTINGS_FORWARD, mimetype="text/html")
 
 
 @app.route("/settings")
 def settings_page():
-    return send_from_directory(app.static_folder, "settings.html")
+    return Response(_SETTINGS_FORWARD, mimetype="text/html")
 
 
 @app.route("/api/config", methods=["GET"])
@@ -690,6 +710,52 @@ def api_save_config():
         return jsonify({"errors": errors}), 400
     _invalidate_remote()  # 配置变了（面板增删、地址改了），远程缓存作废，下次 /api/status 后台重新采集
     return jsonify({"ok": True})
+
+
+@app.route("/api/appearance", methods=["GET"])
+def api_get_appearance():
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
+    return jsonify(appearance_of(cfg))
+
+
+@app.route("/api/appearance", methods=["POST"])
+def api_save_appearance():
+    """设置 → 主题：选了马上保存，只动 appearance 这一段，不碰别的配置。"""
+    colours, errors = clean_appearance(request.get_json(silent=True) or {})
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    def put(cfg):
+        cfg["appearance"] = colours
+
+    update_config(put)
+    return jsonify(colours)
+
+
+@app.route("/api/kaomoji", methods=["GET"])
+def api_get_kaomoji():
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
+    return jsonify(kaomoji_of(cfg))
+
+
+@app.route("/api/kaomoji", methods=["POST"])
+def api_save_kaomoji():
+    """设置 → 颜文字：整份提交，只动 kaomoji 这一段。"""
+    kaomoji, errors = clean_kaomoji(request.get_json(silent=True) or {})
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    def put(cfg):
+        cfg["kaomoji"] = kaomoji
+
+    update_config(put)
+    return jsonify(kaomoji)
 
 
 @app.route("/api/notifications/test", methods=["POST"])
