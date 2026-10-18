@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>设置 · Panopticon</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="/static/theme.js"></script>
 <link rel="stylesheet" href="/static/uwp.css">
 <style>
   /* Settings-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
@@ -19,6 +20,7 @@
   #feishuTestMsg.ok{color:var(--ok)} #feishuTestMsg.err{color:var(--warn)}
   #deployMsg.ok{color:var(--ok)} #deployMsg.err{color:var(--warn)}
   .inline{display:flex;align-items:center;gap:var(--gutter);flex-wrap:wrap}
+  .radios.stacked{flex-direction:column;align-items:flex-start}   /* as Windows 10 Settings' theme choice */
 </style>
 </head>
 <body>
@@ -29,6 +31,7 @@
       <span>设置</span>
     </div>
     <nav class="pivot-headers" id="pivotHeaders" role="tablist">
+      <button class="pivot-header-item" role="tab" data-page="appearance">外观</button>
       <button class="pivot-header-item" role="tab" data-page="notify">通知</button>
       <button class="pivot-header-item" role="tab" data-page="agents">青源机器</button>
       <button class="pivot-header-item" role="tab" data-page="deploy">部署</button>
@@ -43,8 +46,21 @@
       <strong>如果看板打算公网暴露，请先完成登录密码</strong>，否则这里对任何能访问到的人都是开放的。
     </div>
 
+    <!-- 外观 -->
+    <section class="page" data-page="appearance">
+      <div class="group">
+        <div class="group-header">主题</div>
+        <div class="description">只对这个浏览器生效，换一台设备要重新选。选了马上生效，不用保存。</div>
+        <div class="radios stacked" role="radiogroup" aria-label="主题">
+          <label class="radio"><input type="radio" name="theme" value="light"> 浅色</label>
+          <label class="radio"><input type="radio" name="theme" value="dark"> 深色</label>
+          <label class="radio"><input type="radio" name="theme" value="system"> 使用系统设置</label>
+        </div>
+      </div>
+    </section>
+
     <!-- 通知 -->
-    <section class="page" data-page="notify">
+    <section class="page" data-page="notify" hidden>
       <div class="group">
         <div class="group-header">告警阈值</div>
         <div class="description">CPU、内存、磁盘使用率超过这个百分比就告警；看板上的红色也用同一套阈值。</div>
@@ -184,12 +200,12 @@
 
 <script>
 const SECRET_PLACEHOLDER = '••••••••';
-const PAGES = ['notify', 'agents', 'deploy', 'login', 'panels'];
+const PAGES = ['appearance', 'notify', 'agents', 'deploy', 'login', 'panels'];
 
 // ---------- pages (Pivot) ----------
 function currentPage(){
   const m = location.hash.match(/^#s=(\w+)$/);
-  return m && PAGES.includes(m[1]) ? m[1] : 'notify';
+  return m && PAGES.includes(m[1]) ? m[1] : PAGES[0];
 }
 function showPage(animate){
   const page = currentPage();
@@ -219,6 +235,18 @@ window.addEventListener('hashchange', () => showPage(true));
     if(i >= 0 && i < PAGES.length) location.hash = '#s=' + PAGES[i];
   });
 })();
+
+// ---------- 外观 ----------
+// Applies on selection, like Windows 10 Settings; stored per browser by /static/theme.js.
+function syncThemeRadios(){
+  const v = window.panopticonTheme.get();
+  document.querySelectorAll('input[name="theme"]').forEach(r => { r.checked = r.value === v; });
+}
+document.querySelectorAll('input[name="theme"]').forEach(r => {
+  r.addEventListener('change', () => { if(r.checked) window.panopticonTheme.set(r.value); });
+});
+window.addEventListener('storage', syncThemeRadios);
+syncThemeRadios();
 
 // ---------- 宝塔面板 ----------
 function panelRowHtml(p){

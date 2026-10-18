@@ -34,6 +34,7 @@
   --SystemChromeWhite:#ffffff;
   --SystemChromeBlackHigh:#000000;
   --ApplicationPageBackground:var(--SystemAltHigh);
+  --ListPointerOver:rgb(255 255 255 / 0.1);   /* by eye */
 
   /* Accent (project): 25時、ナイトコードで。's unit colour, the only hue used for affordance. */
   --SystemAccent:#884499;
@@ -71,9 +72,26 @@
   --decelerate:cubic-bezier(0.1,0.9,0.2,1);
   color-scheme:dark;
 }
+/* Light dictionary. Applies when the viewer picked 浅色 (data-theme="light", set by
+   /static/theme.js), or left it on 使用系统设置 and the system is light. The two blocks must
+   stay identical. */
+:root[data-theme="light"]{
+  --SystemBaseHigh:#000000;
+  --SystemBaseMediumHigh:rgb(0 0 0 / 0.8);
+  --SystemBaseMedium:rgb(0 0 0 / 0.6);
+  --SystemBaseMediumLow:rgb(0 0 0 / 0.4);
+  --SystemBaseLow:rgb(0 0 0 / 0.2);
+  --SystemAltHigh:#ffffff;
+  --SystemAltMediumLow:rgb(255 255 255 / 0.4);
+  --SystemChromeLow:#f2f2f2;
+  --SystemChromeMediumLow:#f2f2f2;
+  --SystemChromeMedium:#e6e6e6;
+  --SystemChromeHigh:#cccccc;
+  --ListPointerOver:rgb(0 0 0 / 0.06);   /* by eye */
+  color-scheme:light;
+}
 @media (prefers-color-scheme: light){
-  :root{
-    /* Light dictionary. */
+  :root:not([data-theme="dark"]){
     --SystemBaseHigh:#000000;
     --SystemBaseMediumHigh:rgb(0 0 0 / 0.8);
     --SystemBaseMedium:rgb(0 0 0 / 0.6);
@@ -85,6 +103,7 @@
     --SystemChromeMediumLow:#f2f2f2;
     --SystemChromeMedium:#e6e6e6;
     --SystemChromeHigh:#cccccc;
+    --ListPointerOver:rgb(0 0 0 / 0.06);   /* by eye */
     color-scheme:light;
   }
 }
