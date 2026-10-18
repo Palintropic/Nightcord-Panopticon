@@ -6,7 +6,7 @@ import subprocess
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-PAGES = ["index.html", "settings.html", "login.html"]
+PAGES = ["index.html", "login.html"]
 
 # Runs static/theme.js against a fake document/localStorage, records data-theme after each step.
 HARNESS = r"""
@@ -15,14 +15,17 @@ const src = fs.readFileSync(process.argv[1], 'utf8');
 function run(initial, blocked){
   const attrs = {};
   const store = initial ? {'panopticon.theme': initial} : {};
+  if(initial === 'light') store['panopticon.accents'] = JSON.stringify({tile: '#4455dd'});
   const listeners = {};
   const localStorage = {
     getItem(k){ if(blocked) throw new Error('blocked'); return k in store ? store[k] : null; },
     setItem(k, v){ if(blocked) throw new Error('blocked'); store[k] = String(v); },
     removeItem(k){ if(blocked) throw new Error('blocked'); delete store[k]; },
   };
+  const props = {};
   const document = {documentElement: {
     setAttribute(k, v){ attrs[k] = v; }, removeAttribute(k){ delete attrs[k]; },
+    style: {setProperty(k, v){ props[k] = v; }, removeProperty(k){ delete props[k]; }},
   }};
   const window = {addEventListener(t, fn){ listeners[t] = fn; }};
   new Function('window', 'document', 'localStorage', src)(window, document, localStorage);
@@ -34,6 +37,9 @@ function run(initial, blocked){
   store['panopticon.theme'] = 'light';
   listeners.storage({key: 'panopticon.theme'});
   steps.afterOtherTab = attrs['data-theme'] || null;
+  steps.cachedAccents = Object.assign({}, props);
+  window.panopticonTheme.setAccents({tile: '#FFDD44', curve: 'red', bar: '#000080'});
+  steps.afterAccents = [Object.assign({}, props), store['panopticon.accents'] || null];
   return steps;
 }
 console.log(JSON.stringify({
@@ -43,6 +49,13 @@ console.log(JSON.stringify({
 
 
 class ThemePageTests(unittest.TestCase):
+    def test_surfaces_read_their_own_colour_tokens(self):
+        css = (ROOT / "static" / "uwp.css").read_text(encoding="utf-8")
+        page = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("background:var(--BarAccent);color:var(--BarForeground)", css)
+        self.assertIn(".tile.state-ok{--tile-bg:var(--TileAccent);color:var(--TileForeground)}", page)
+        self.assertIn('stroke="var(--CurveAccent)"', page)
+
     def test_every_page_applies_the_theme_before_the_stylesheet(self):
         # Loaded synchronously ahead of uwp.css so a reload never flashes the other theme.
         for page in PAGES:
@@ -64,7 +77,7 @@ class ThemePageTests(unittest.TestCase):
         self.assertEqual(norm(chosen), norm(system))
 
     def test_settings_offers_the_three_choices(self):
-        source = (ROOT / "static" / "settings.html").read_text(encoding="utf-8")
+        source = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         for value in ("light", "dark", "system"):
             self.assertIn(f'<input type="radio" name="theme" value="{value}">', source)
 
@@ -97,6 +110,22 @@ class ThemeScriptTests(unittest.TestCase):
 
     def test_blocked_storage_still_switches_this_page(self):
         self.assertEqual(self.r["blocked"]["afterDark"], ["dark", None, "dark"])
+
+    def test_cached_accents_paint_before_the_server_answers(self):
+        self.assertEqual(self.r["light"]["cachedAccents"], {"--TileAccent": "#4455dd", "--TileForeground": "#ffffff"})
+        self.assertEqual(self.r["fresh"]["cachedAccents"], {})
+
+    def test_accents_pick_a_readable_foreground_and_drop_junk(self):
+        props, cached = self.r["fresh"]["afterAccents"]
+        # Light yellow takes black text, navy white; "red" is not #rrggbb and falls back to the default.
+        self.assertEqual(props, {"--TileAccent": "#ffdd44", "--TileForeground": "#000000",
+                                 "--BarAccent": "#000080", "--BarForeground": "#ffffff"})
+        self.assertEqual(json.loads(cached), {"tile": "#ffdd44", "bar": "#000080"})
+
+    def test_blocked_storage_still_applies_accents(self):
+        props, cached = self.r["blocked"]["afterAccents"]
+        self.assertEqual(props["--TileAccent"], "#ffdd44")
+        self.assertIsNone(cached)
 
 
 if __name__ == "__main__":

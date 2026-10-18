@@ -24,7 +24,7 @@ from bt_client import BTClient
 from nightcord_status_client import NightcordStatusClient
 from notifier import Notifier, evaluate_alerts, plan_agent_alerts
 from auth import BruteForceGuard, get_client_ip
-from config_editor import redact_for_display, merge_submitted
+from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance
 from agent_deploy import deploy_agent, AgentDeployError
 import agent_hosts
 from config_store import load_yaml, save_yaml, update_yaml
@@ -655,14 +655,14 @@ def index():
 
 @app.route("/setup")
 def setup_page():
-    # /setup 和 /settings 是同一个页面：面板列表为空时它就是"首次配置向导"，
-    # 已经配置过之后就是普通的设置页，逻辑都在前端 JS 里根据 GET /api/config 的返回判断。
-    return send_from_directory(app.static_folder, "settings.html")
+    # 设置已经并进看板，是顶部的「设置」一页（#p=5）。/setup 和 /settings 留着跳过去，
+    # 旧书签和文档里的地址照样能用；首次配置的提示也在那一页。
+    return redirect("/#p=5")
 
 
 @app.route("/settings")
 def settings_page():
-    return send_from_directory(app.static_folder, "settings.html")
+    return redirect("/#p=5")
 
 
 @app.route("/api/config", methods=["GET"])
@@ -690,6 +690,29 @@ def api_save_config():
         return jsonify({"errors": errors}), 400
     _invalidate_remote()  # 配置变了（面板增删、地址改了），远程缓存作废，下次 /api/status 后台重新采集
     return jsonify({"ok": True})
+
+
+@app.route("/api/appearance", methods=["GET"])
+def api_get_appearance():
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
+    return jsonify(appearance_of(cfg))
+
+
+@app.route("/api/appearance", methods=["POST"])
+def api_save_appearance():
+    """设置 → 主题：选了马上保存，只动 appearance 这一段，不碰别的配置。"""
+    colours, errors = clean_appearance(request.get_json(silent=True) or {})
+    if errors:
+        return jsonify({"errors": errors}), 400
+
+    def put(cfg):
+        cfg["appearance"] = colours
+
+    update_config(put)
+    return jsonify(colours)
 
 
 @app.route("/api/notifications/test", methods=["POST"])

@@ -178,3 +178,37 @@ def merge_submitted(old_cfg: dict, submitted: dict):
     merged = dict(old_cfg)
     merged.update({"panels": merged_panels, "dashboard_auth": merged_da, "notifications": merged_notif})
     return merged, errors
+
+
+# 设置 → 主题：曲线、正常磁贴、底部状态栏各自的颜色，存在 config.yaml 的 appearance 段，
+# 所有设备共用。没设置的部分用 25 时紫（跟 uwp.css 里的 --SystemAccent 一致）。
+APPEARANCE_PARTS = ("curve", "tile", "bar")
+DEFAULT_ACCENT = "#884499"
+
+
+def _clean_hex(v):
+    """'#AbC123' / 'abc123' → '#abc123'；其它一律 None。"""
+    if not isinstance(v, str):
+        return None
+    s = v.strip().lstrip("#")
+    if len(s) != 6 or any(c not in "0123456789abcdefABCDEF" for c in s):
+        return None
+    return "#" + s.lower()
+
+
+def appearance_of(cfg: dict) -> dict:
+    stored = (cfg or {}).get("appearance") or {}
+    return {part: _clean_hex(stored.get(part)) or DEFAULT_ACCENT for part in APPEARANCE_PARTS}
+
+
+def clean_appearance(submitted: dict):
+    """返回 (colours, errors)。三项都要给，格式是 #rrggbb。"""
+    colours, errors = {}, []
+    names = {"curve": "曲线", "tile": "磁贴", "bar": "状态栏"}
+    for part in APPEARANCE_PARTS:
+        hex_value = _clean_hex((submitted or {}).get(part))
+        if hex_value is None:
+            errors.append(f"{names[part]}颜色要写成 #rrggbb")
+        else:
+            colours[part] = hex_value
+    return colours, errors
