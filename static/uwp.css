@@ -119,6 +119,13 @@
    (same as PNS). */
 @media (min-width:640px){ :root{ --page-margin:24px } }
 @media (min-width:1008px){ :root{ --page-margin:40px } }
+/* Inside the shell the same breakpoints follow the shell's own width, which honours the 缩放
+   setting (CSS zoom on <html>, set by /static/theme.js); @media keeps reading the unzoomed
+   window. The :root values above still serve pages without a shell (login). */
+.shell{container-type:inline-size}
+.shell > *{--page-margin:12px}
+@container (min-width:640px){ .shell > *{ --page-margin:24px } }
+@container (min-width:1008px){ .shell > *{ --page-margin:40px } }
 
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
@@ -133,7 +140,7 @@ code{font:12px/16px ui-monospace,Menlo,Consolas,monospace}
 input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 
 /* ── Shell ── */
-.shell{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.shell{height:100%;display:flex;flex-direction:column;overflow:hidden}
 .pivot{flex:0 0 auto;padding-top:var(--page-margin)}
 /* PivotTitleFontSize 14 Bold → SemiBold (Selawik has no Bold). Shown because nothing else on
    screen names the app. */
@@ -167,7 +174,7 @@ button.status-item:hover,a.status-item:hover{background:rgb(255 255 255 / 0.12)}
 .status-alert{background:var(--warn);color:#ffffff}
 .status-alert[hidden]{display:none}
 .status-spacer{flex:1}
-@media (max-width:640px){ .status-optional{display:none} }
+@container (max-width:640px){ .status-optional{display:none} }
 
 /* ── Text ── */
 .group{margin-top:var(--group-gap)}

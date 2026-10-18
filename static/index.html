@@ -23,7 +23,7 @@
   .mark{width:8px;height:8px;background:var(--SystemBaseMedium)}
   .mark.ok{background:var(--ok)} .mark.caution{background:var(--caution)} .mark.warn{background:var(--warn)}
   .machine-row .summary{display:none}
-  @media (max-width:640px){
+  @container (max-width:640px){
     .machine-head{display:none}
     .machine-row{grid-template-columns:16px minmax(0,1fr);row-gap:2px}
     .machine-row .num,.machine-row .seen{display:none}
@@ -33,10 +33,11 @@
   /* Overview: one row per machine, a square tile on the left and the last hour of one metric on
      the right. At phone width the curve drops under its tile. Tile 148 square (W10M medium tile
      150, rounded to the 4 grid); no border, radius or shadow. */
+  /* Width breakpoints are container queries on .shell so they follow the 缩放 setting (uwp.css). */
   .ov-switch{display:flex;justify-content:flex-end;margin-top:var(--gutter)}
   .ov-switch select{width:auto}
   .ov-row{display:grid;grid-template-columns:148px minmax(0,1fr);gap:var(--gutter);margin-top:var(--gutter)}
-  @media (max-width:640px){ .ov-row{grid-template-columns:minmax(0,1fr);gap:8px} .ov-row + .ov-row{margin-top:var(--group-gap)} }
+  @container (max-width:640px){ .ov-row{grid-template-columns:minmax(0,1fr);gap:8px} .ov-row + .ov-row{margin-top:var(--group-gap)} }
   .tile{position:relative;display:block;width:148px;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
         -webkit-tap-highlight-color:transparent}
   .tile-inner{position:absolute;inset:0;overflow:hidden;padding:8px;background:var(--tile-bg);
@@ -62,7 +63,7 @@
   .ov-chart{position:relative;flex:1;min-height:56px;margin-top:4px}
   .ov-chart svg{position:absolute;inset:0;width:100%;height:100%}
   .ov-axis{display:flex;justify-content:space-between;font:var(--type-caption);color:var(--SystemBaseMedium)}
-  @media (max-width:640px){ .ov-chart{flex:0 0 72px} }
+  @container (max-width:640px){ .ov-chart{flex:0 0 72px} }
 
   /* Detail */
   .fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));column-gap:var(--group-gap)}
@@ -147,6 +148,11 @@
           <label class="radio"><input type="radio" name="theme" value="dark"> 深色</label>
           <label class="radio"><input type="radio" name="theme" value="system"> 使用系统设置</label>
         </div>
+      </div>
+      <div class="group">
+        <div class="group-header">缩放</div>
+        <div class="description">把文字和界面整体放大或缩小，像 Windows 的“缩放与布局”。跟模式一样只对这个浏览器生效：大屏幕和手机可以各设各的。</div>
+        <select id="uiScale" aria-label="缩放" style="width:auto"></select>
       </div>
       <div class="group">
         <div class="group-header">配色方案</div>
@@ -807,8 +813,10 @@ document.addEventListener('pointerdown', e => {
   if(!t || reduceMotion.matches) return;
   const inner = t.querySelector('.tile-inner');
   const r = t.getBoundingClientRect();
-  const dx = (e.clientX - r.left) / r.width - 0.5;
-  const dy = (e.clientY - r.top) / r.height - 0.5;
+  // Clamped: under the 缩放 setting the pointer and the box may not share a coordinate space.
+  const clamp = v => Math.max(-0.5, Math.min(0.5, v));
+  const dx = clamp((e.clientX - r.left) / r.width - 0.5);
+  const dy = clamp((e.clientY - r.top) / r.height - 0.5);
   t.classList.add('pressed');
   inner.style.transform = `scale(0.97) rotateY(${(dx * 12).toFixed(2)}deg) rotateX(${(-dy * 12).toFixed(2)}deg)`;
   const release = () => {

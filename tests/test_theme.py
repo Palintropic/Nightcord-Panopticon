@@ -15,7 +15,11 @@ const src = fs.readFileSync(process.argv[1], 'utf8');
 function run(initial, blocked){
   const attrs = {};
   const store = initial ? {'panopticon.theme': initial} : {};
-  if(initial === 'light') store['panopticon.accents'] = JSON.stringify({tile: '#4455dd'});
+  if(initial === 'light'){
+    store['panopticon.accents'] = JSON.stringify({tile: '#4455dd'});
+    store['panopticon.scale'] = '125';
+  }
+  if(initial === 'purple') store['panopticon.scale'] = '9000';
   const listeners = {};
   const localStorage = {
     getItem(k){ if(blocked) throw new Error('blocked'); return k in store ? store[k] : null; },
@@ -38,6 +42,11 @@ function run(initial, blocked){
   listeners.storage({key: 'panopticon.theme'});
   steps.afterOtherTab = attrs['data-theme'] || null;
   steps.cachedAccents = Object.assign({}, props);
+  steps.initialZoom = document.documentElement.style.zoom || null;
+  window.panopticonTheme.setScale(150);
+  steps.after150 = [document.documentElement.style.zoom, store['panopticon.scale'] || null, window.panopticonTheme.getScale()];
+  window.panopticonTheme.setScale(333);
+  steps.afterJunkScale = [document.documentElement.style.zoom || null, store['panopticon.scale'] || null, window.panopticonTheme.getScale()];
   window.panopticonTheme.setAccents({tile: '#FFDD44', curve: 'red', bar: '#000080'});
   steps.afterAccents = [Object.assign({}, props), store['panopticon.accents'] || null];
   return steps;
@@ -121,6 +130,26 @@ class ThemeScriptTests(unittest.TestCase):
         self.assertEqual(props, {"--TileAccent": "#ffdd44", "--TileForeground": "#000000",
                                  "--BarAccent": "#000080", "--BarForeground": "#ffffff"})
         self.assertEqual(json.loads(cached), {"tile": "#ffdd44", "bar": "#000080"})
+
+    def test_stored_scale_is_applied_and_junk_ignored(self):
+        self.assertEqual(self.r["light"]["initialZoom"], "1.25")
+        self.assertIsNone(self.r["junk"]["initialZoom"])
+        self.assertIsNone(self.r["fresh"]["initialZoom"])
+
+    def test_scale_is_stored_and_100_clears_it(self):
+        self.assertEqual(self.r["fresh"]["after150"], ["1.5", "150", 150])
+        self.assertEqual(self.r["fresh"]["afterJunkScale"], [None, None, 100])
+
+    def test_blocked_storage_still_scales_this_page(self):
+        self.assertEqual(self.r["blocked"]["after150"], ["1.5", None, 150])
+
+    def test_width_breakpoints_follow_the_zoomed_shell(self):
+        # @media reads the unzoomed window, so inside the shell they must be container queries.
+        css = (ROOT / "static" / "uwp.css").read_text(encoding="utf-8")
+        page = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn(".shell{container-type:inline-size}", css)
+        self.assertNotIn("100vh", css)
+        self.assertNotRegex(page, r"@media \((max|min)-width")
 
     def test_blocked_storage_still_applies_accents(self):
         props, cached = self.r["blocked"]["afterAccents"]

@@ -32,8 +32,16 @@ function syncThemeRadios(){
 document.querySelectorAll('input[name="theme"]').forEach(r => {
   r.addEventListener('change', () => { if(r.checked) window.panopticonTheme.set(r.value); });
 });
-window.addEventListener('storage', () => { syncThemeRadios(); renderAccents(); });
+// 缩放: also per browser, applied by theme.js as CSS zoom on <html>.
+function syncScale(){
+  const current = window.panopticonTheme.getScale();
+  document.getElementById('uiScale').innerHTML = window.panopticonTheme.SCALES.map(v =>
+    `<option value="${v}"${v === current ? ' selected' : ''}>${v}%${v === 100 ? '（默认）' : ''}</option>`).join('');
+}
+document.getElementById('uiScale').addEventListener('change', e => window.panopticonTheme.setScale(Number(e.target.value)));
+window.addEventListener('storage', () => { syncThemeRadios(); syncScale(); renderAccents(); });
 syncThemeRadios();
+syncScale();
 
 // Surface colours are saved on the server the moment one is picked (POST /api/appearance), so
 // every device shows the same. Swatches: 25 時's purple, then the Windows 10 accent palette.
