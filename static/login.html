@@ -64,6 +64,12 @@ function bufferToBase64url(buf){
   return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+// Being sent here from a dashboard address keeps its #part (the browser carries it across the
+// redirect), so after signing in the same page opens. Only the dashboard's own forms pass.
+function returnHash(){
+  return /^#(p=\d+|s=\w+|m=[^#]*)$/.test(location.hash) ? location.hash : '';
+}
+
 async function loginWithPassword(e){
   e.preventDefault();
   showMsg('登录中…', true);
@@ -78,7 +84,7 @@ async function loginWithPassword(e){
     });
     const data = await res.json();
     if(!res.ok){ showMsg(data.error || '登录失败', false); return; }
-    location.href = '/';
+    location.href = '/' + returnHash();
   }catch(err){
     showMsg('登录失败：' + err, false);
   }
@@ -122,7 +128,7 @@ async function loginWithPasskey(){
     });
     const result = await verifyRes.json();
     if(!verifyRes.ok){ showMsg(result.error || 'Passkey 验证失败', false); return; }
-    location.href = '/';
+    location.href = '/' + returnHash();
   }catch(err){
     showMsg('Passkey 登录失败：' + err, false);
   }

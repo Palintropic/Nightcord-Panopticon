@@ -1,5 +1,7 @@
 import json
 import os
+import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -9,6 +11,9 @@ import yaml
 
 import app
 from config_editor import appearance_of, clean_appearance, clean_kaomoji, kaomoji_of, merge_submitted
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class AppearanceConfigTests(unittest.TestCase):
@@ -102,6 +107,46 @@ class AppearanceApiTests(unittest.TestCase):
             r = self.client.get(path)
             self.assertEqual(r.status_code, 200)
             self.assertIn("location.replace(", r.get_data(as_text=True))
+
+    def test_forward_page_opens_without_signing_in(self):
+        # With login on, the forward still has to run so the #s=... survives into the login page.
+        with open(self.path, "w", encoding="utf-8") as f:
+            yaml.safe_dump({"panels": [], "dashboard_auth": {"enabled": True, "password_hash": "x"}}, f)
+        self.assertEqual(self.client.get("/settings").status_code, 200)
+        self.assertEqual(self.client.get("/api/appearance").status_code, 401)
+        self.assertEqual(self.client.get("/").status_code, 302)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node to run the login page script")
+    def test_login_returns_to_dashboard_addresses_only(self):
+        page = (ROOT / "static" / "login.html").read_text(encoding="utf-8")
+        fn = re.search(r"function returnHash\(\)\{.*?\n\}", page, re.S).group(0)
+        runner = ("const fn = require('fs').readFileSync(0, 'utf8'); const out = {};"
+                  "for(const hash of ['', '#s=notify', '#p=5', '#m=%E4%B8%8A%E6%B5%B7', '#x', '#s=a b', '#p=5#m=x']){"
+                  "  out[hash] = new Function('location', fn + '; return returnHash();')({hash});"
+                  "} console.log(JSON.stringify(out));")
+        result = subprocess.run(["node", "-e", runner], input=fn, capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(json.loads(result.stdout), {
+            "": "", "#s=notify": "#s=notify", "#p=5": "#p=5", "#m=%E4%B8%8A%E6%B5%B7": "#m=%E4%B8%8A%E6%B5%B7",
+            "#x": "", "#s=a b": "", "#p=5#m=x": "",
+        })
+
+    @unittest.skipUnless(shutil.which("node"), "needs node to run the save queue")
+    def test_saves_go_out_one_at_a_time_with_the_latest_state(self):
+        # The first reply is slow; the second save must wait for it and carry the newest state,
+        # so the server ends with the last pick whatever order the network would have used.
+        src = (ROOT / "static" / "settings.js").read_text(encoding="utf-8")
+        fn = re.search(r"function makeSaveQueue\(\)\{.*?\n\}", src, re.S).group(0)
+        runner = fn + """
+        const queue = makeSaveQueue(); let state = 'a'; const sent = []; const done = [];
+        const send = delay => () => { sent.push(state); return new Promise(r => setTimeout(() => r({ok: true}), delay)); };
+        queue(send(50), (r, last) => done.push(['first', last]));
+        state = 'b';
+        const second = queue(send(0), (r, last) => done.push(['second', last]));
+        second.then(ok => console.log(JSON.stringify({sent, done, ok})));
+        """
+        result = subprocess.run(["node", "-e", runner], capture_output=True, text=True, timeout=30, check=True)
+        self.assertEqual(json.loads(result.stdout),
+                         {"sent": ["b", "b"], "done": [["first", False], ["second", True]], "ok": True})
 
     @unittest.skipUnless(shutil.which("node"), "needs node to run the forwarding script")
     def test_old_bookmarks_keep_their_page(self):

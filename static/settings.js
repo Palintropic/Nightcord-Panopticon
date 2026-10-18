@@ -112,28 +112,48 @@ function renderAccents(force){
   });
 }
 
-let accentSave = 0;
-async function saveAccents(next){
-  if(!appearanceLoaded) return;
-  const msg = document.getElementById('accentMsg');
-  const colours = {...currentAccents(), ...next};
-  window.panopticonTheme.setAccents(colours);   // shows at once; the server copy follows
-  renderAccents(true);
-  const seq = ++accentSave;
-  msg.className = 'caption'; msg.textContent = '保存中…';
+// Saves of one section go out one at a time, each carrying the section as it stands when it is
+// sent, so the last pick is what the server keeps however the network orders the replies.
+// send() resolves {ok, data, error}; done(result, last) runs after each, last = none queued behind.
+function makeSaveQueue(){
+  let tail = Promise.resolve();
+  let pending = 0;
+  return (send, done) => {
+    pending++;
+    const run = tail.then(send).then(r => { pending--; done(r, pending === 0); return r.ok; });
+    tail = run.catch(() => {});
+    return run;
+  };
+}
+async function postJson(url, body){
   try{
-    const res = await fetch('/api/appearance', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(colours)});
+    const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
     const data = await res.json().catch(() => ({}));
-    if(seq !== accentSave) return;   // a newer pick is on its way
-    if(!res.ok){
-      msg.className = 'err'; msg.textContent = '没保存上：' + (data.errors || [data.error || `HTTP ${res.status}`]).join('；');
+    return res.ok ? {ok:true, data} : {ok:false, error:(data.errors || [data.error || `HTTP ${res.status}`]).join('；')};
+  }catch(e){
+    return {ok:false, error:String(e)};
+  }
+}
+function setMsg(id, cls, text){
+  const msg = document.getElementById(id);
+  msg.className = cls; msg.textContent = text;
+}
+
+const accentQueue = makeSaveQueue();
+function saveAccents(next){
+  if(!appearanceLoaded) return;
+  window.panopticonTheme.setAccents({...currentAccents(), ...next});   // shows at once; the server copy follows
+  renderAccents(true);
+  setMsg('accentMsg', 'caption', '保存中…');
+  accentQueue(() => postJson('/api/appearance', currentAccents()), (r, last) => {
+    if(!r.ok){
+      setMsg('accentMsg', 'err', '没保存上：' + r.error);
+      // Show what the server really holds instead of the colours that did not save.
+      loadAppearance().then(() => renderAccents(true));
       return;
     }
-    msg.textContent = '已保存 ✓';
-  }catch(e){
-    if(seq === accentSave){ msg.className = 'err'; msg.textContent = '没保存上：' + e; }
-  }
+    if(last && document.getElementById('accentMsg').className !== 'err') setMsg('accentMsg', 'caption', '已保存 ✓');
+  });
 }
 
 document.getElementById('settingsView').addEventListener('click', e => {
@@ -214,7 +234,7 @@ function collectFaces(){
   return faces;
 }
 
-// After a failed save: drop any optimistic pick and show what the server really holds.
+// After a failed save: drop any optimistic change and show what the server really holds.
 function resyncKaomoji(){
   loadKaomoji().then(() => {
     if(document.activeElement && document.activeElement.closest('#kaomojiAssign')) document.activeElement.blur();
@@ -222,27 +242,25 @@ function resyncKaomoji(){
   });
 }
 
-async function saveKaomoji(next){
-  if(!kaomojiLoaded) return false;
-  const msg = document.getElementById('kaomojiMsg');
-  msg.className = 'caption'; msg.textContent = '保存中…';
-  try{
-    const res = await fetch('/api/kaomoji', {method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({...kaomojiConfig, ...next})});
-    const data = await res.json().catch(() => ({}));
-    if(!res.ok){
-      msg.className = 'err'; msg.textContent = '没保存上：' + (data.errors || [data.error || `HTTP ${res.status}`]).join('；');
+// The change is recorded at once, so a save made before this one is answered builds on it; the
+// queue then sends the whole section as it stands. Resolves to whether this save landed.
+const kaomojiQueue = makeSaveQueue();
+function saveKaomoji(update){
+  if(!kaomojiLoaded) return Promise.resolve(false);
+  kaomojiConfig = {...kaomojiConfig, ...update};
+  setMsg('kaomojiMsg', 'caption', '保存中…');
+  return kaomojiQueue(() => postJson('/api/kaomoji', kaomojiConfig), (r, last) => {
+    if(!r.ok){
+      setMsg('kaomojiMsg', 'err', '没保存上：' + r.error);
       resyncKaomoji();
-      return false;
+      return;
     }
-    setKaomojiConfig(data);
-    msg.className = 'ok'; msg.textContent = '已保存 ✓';
-    return true;
-  }catch(e){
-    msg.className = 'err'; msg.textContent = '没保存上：' + e;
-    resyncKaomoji();
-    return false;
-  }
+    // An earlier reply would roll back changes still queued behind it; only the last one applies.
+    if(last){
+      setKaomojiConfig(r.data);
+      if(document.getElementById('kaomojiMsg').className !== 'err') setMsg('kaomojiMsg', 'ok', '已保存 ✓');
+    }
+  });
 }
 
 document.getElementById('kaomojiAssign').addEventListener('change', e => {
@@ -250,10 +268,8 @@ document.getElementById('kaomojiAssign').addEventListener('change', e => {
   if(!sel || !kaomojiLoaded) return;
   const assign = {...kaomojiConfig.assign};
   if(sel.value) assign[sel.dataset.assign] = sel.value; else delete assign[sel.dataset.assign];
-  // Recorded at once, so a second pick made before this one is answered builds on it. Only the
-  // picks are sent; face fields not yet saved stay as typed.
-  kaomojiConfig = {...kaomojiConfig, assign};
-  saveKaomoji({assign, faces:kaomojiConfig.faces});
+  // Face fields not yet saved stay as typed; only the picks change.
+  saveKaomoji({assign});
 });
 document.getElementById('kaomojiSave').addEventListener('click', () => saveKaomoji({faces:collectFaces()}));
 document.getElementById('kaomojiReset').addEventListener('click', async () => {

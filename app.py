@@ -41,7 +41,10 @@ metrics_store.init_db()
 _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实际阈值以 config.yaml 为准（见 enforce_auth）
 
 # 不需要登录就能访问的路由：登录页本身，以及登录相关的两个 API（否则没法登录）
-PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify"}
+# setup_page / settings_page 只回一段固定的转发脚本（见 _SETTINGS_FORWARD），不带任何数据；放行是为了
+# 让旧书签的 #s=... 先在浏览器里转成看板地址，没登录的话再由看板被踢去登录页，# 后面那段一路带着。
+PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify",
+                    "setup_page", "settings_page"}
 
 # 远程数据源（宝塔面板、Nightcord-Status）的采集结果缓存。远程采集可能很慢（宝塔接口串行，
 # 一台没响应就要几十秒），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
