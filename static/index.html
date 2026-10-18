@@ -9,12 +9,6 @@
 <style>
   /* Dashboard-only pieces. Shared tokens, shell and controls live in /static/uwp.css. */
 
-  /* Stats strip (as PNS): Subheader numbers over Caption labels. */
-  .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gutter);margin-top:var(--gutter)}
-  @media (max-width:640px){ .stats{grid-template-columns:repeat(2,minmax(0,1fr))} }
-  .stat-value{font:var(--type-subheader);font-variant-numeric:tabular-nums}
-  .stat-label{font:var(--type-caption);color:var(--SystemBaseMedium)}
-
   /* Machine table: list items 40 high; square status mark sized by eye (as PNS's score dot). */
   .machine-list{margin:var(--gutter) calc(-1 * var(--page-margin)) 0}
   .machine-row,.machine-head{display:grid;grid-template-columns:16px minmax(0,1fr) 72px 72px 72px 132px;
@@ -36,13 +30,15 @@
     .machine-row .summary{display:block;grid-column:2;font:var(--type-caption);color:var(--SystemBaseMedium)}
   }
 
-  /* Server tiles: a solid block, white text, label bottom-left with an 8 inset; no border, radius
-     or shadow. Phone width keeps the 304 wide tile; wider windows stretch tiles to fill the row
-     and make them 164 high (both by eye, a desktop deviation from the fixed W10M sizes). */
-  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(304px,1fr));gap:8px;margin-top:var(--group-gap)}
-  .tile{position:relative;display:block;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
+  /* Overview: one row per machine, a square tile on the left and the last hour of one metric on
+     the right. At phone width the curve drops under its tile. Tile 148 square (W10M medium tile
+     150, rounded to the 4 grid); no border, radius or shadow. */
+  .ov-switch{display:flex;justify-content:flex-end;margin-top:var(--gutter)}
+  .ov-switch select{width:auto}
+  .ov-row{display:grid;grid-template-columns:148px minmax(0,1fr);gap:var(--gutter);margin-top:var(--gutter)}
+  @media (max-width:640px){ .ov-row{grid-template-columns:minmax(0,1fr);gap:8px} .ov-row + .ov-row{margin-top:var(--group-gap)} }
+  .tile{position:relative;display:block;width:148px;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
         -webkit-tap-highlight-color:transparent}
-  @media (min-width:640px){ .tile{height:164px} }
   .tile-inner{position:absolute;inset:0;overflow:hidden;padding:8px;background:var(--tile-bg);
               transition:transform 200ms cubic-bezier(0,0,0.2,1)}   /* by eye: release */
   .tile.pressed .tile-inner{transition-duration:90ms}                 /* by eye: press */
@@ -50,14 +46,23 @@
   .tile.state-warn{--tile-bg:var(--warn)}
   .tile.state-caution{--tile-bg:var(--caution);color:#000000}  /* deviation: white on amber fails contrast */
   .tile.state-offline{--tile-bg:var(--SystemChromeGray)}
-  .tile .readings{display:flex;gap:16px}
-  .tile .reading .t-value{font:var(--type-title);font-variant-numeric:tabular-nums}
-  .tile .reading .t-label{font:var(--type-caption);opacity:.8}
-  .tile svg{position:absolute;left:8px;right:8px;bottom:32px;width:calc(100% - 16px);height:44px}
-  .tile .tile-label{position:absolute;left:8px;bottom:8px;right:8px;display:flex;justify-content:space-between;gap:8px;
-                    font:var(--type-control);white-space:nowrap}
-  .tile .tile-label .name{overflow:hidden;text-overflow:ellipsis}
-  .tile .tile-label .seen{font:var(--type-caption);opacity:.8;align-self:flex-end}
+  .tile .t-state{font:var(--type-control)}
+  /* Kaomoji: Subtitle 20, centred in the tile (by eye). */
+  .tile .face{position:absolute;left:4px;right:4px;top:50%;transform:translateY(-50%);text-align:center;
+              font:var(--type-subtitle);white-space:nowrap}
+  .tile .tile-label{position:absolute;left:8px;bottom:8px;right:8px;display:flex;justify-content:space-between;
+                    align-items:flex-end;gap:8px;white-space:nowrap}
+  .tile .chara{font:var(--type-caption);opacity:.8;flex:0 0 auto}
+  .tile .name{font:var(--type-control);overflow:hidden;text-overflow:ellipsis;text-align:right}
+  /* Readings as the old stats strip: Subheader numbers over Caption labels, always all three. */
+  .ov-trend{min-width:0;display:flex;flex-direction:column}
+  .ov-readings{display:flex;gap:var(--group-gap)}
+  .stat-value{font:var(--type-subheader);font-variant-numeric:tabular-nums}
+  .stat-label{font:var(--type-caption);color:var(--SystemBaseMedium)}
+  .ov-chart{position:relative;flex:1;min-height:56px;margin-top:4px}
+  .ov-chart svg{position:absolute;inset:0;width:100%;height:100%}
+  .ov-axis{display:flex;justify-content:space-between;font:var(--type-caption);color:var(--SystemBaseMedium)}
+  @media (max-width:640px){ .ov-chart{flex:0 0 72px} }
 
   /* Detail */
   .fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));column-gap:var(--group-gap)}
@@ -312,9 +317,10 @@ function renderStatusBar(){
   const attention = ps.filter(p => stateOf(p) === 'warn').length;
   alert.hidden = attention === 0;
   alert.textContent = `${attention} 需要关注`;
+  const caution = ps.filter(p => stateOf(p) === 'caution').length;
   // Notes sit next to the count, which stays visible at phone width.
   const notes = [...staleNotes(), remoteNote()].filter(Boolean);
-  summary.textContent = [`${online} / ${machines.length} 在线`, ...notes].join(' · ');
+  summary.textContent = [`${online} / ${machines.length} 在线`, caution ? `${caution} 接近阈值` : '', ...notes].filter(Boolean).join(' · ');
   summary.title = summary.textContent;
   updated.textContent = '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
 }
@@ -346,22 +352,22 @@ function stat(value, label, cls){
   return `<div><div class="stat-value ${cls || ''}">${value}</div><div class="stat-label">${label}</div></div>`;
 }
 
+// Problem machines first: offline, then needs attention, then near a threshold; ties keep the
+// server's order.
+function overviewRank(p){
+  if(p.kind !== 'nightcord-status' && (isOffline(p) || noMetrics(p))) return 0;
+  return {warn:1, caution:2}[stateOf(p)] ?? 3;
+}
+
 function overview(){
   const empty = noData();
   if(empty) return empty;
-  const ps = panels();
-  const machines = ps.filter(p => p.kind !== 'nightcord-status');
-  const online = machines.filter(p => !isOffline(p)).length;
-  const attention = ps.filter(p => stateOf(p) === 'warn').length;
-  const caution = ps.filter(p => stateOf(p) === 'caution').length;
-  return `<div class="stats">
-    ${stat(machines.length, '机器')}
-    ${stat(online, '在线', 'ok')}
-    ${stat(attention, '需要关注', attention ? 'warn' : '')}
-    ${stat(caution, '接近阈值', caution ? 'caution' : '')}
-  </div>
-  <div class="tiles">${ps.map(tile).join('')}</div>
-  <div class="caption" style="margin-top:8px">磁贴里的曲线：实线 CPU，淡线内存，最近 1 小时</div>`;
+  const ps = panels().map((p, i) => [p, i])
+    .sort((a, b) => overviewRank(a[0]) - overviewRank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  const options = OVERVIEW_METRICS.map(o =>
+    `<option value="${o.key}"${o.key === overviewMetric ? ' selected' : ''}>${o.label}</option>`).join('');
+  return `<div class="ov-switch"><select id="overviewMetric" aria-label="曲线显示">${options}</select></div>
+    ${ps.map(p => `<div class="ov-row">${tile(p)}${trend(p)}</div>`).join('')}`;
 }
 
 function stateText(p){
@@ -408,45 +414,96 @@ function machinesView(){
   }).join('')}</div>`;
 }
 
-function sparkline(samples){
-  const w = 300, h = 44;
-  const tsList = samples.map(s => s.ts);
-  const minTs = Math.min(...tsList), span = Math.max(Math.max(...tsList) - minTs, 1);
-  const x = t => ((t - minTs) / span) * w;
-  const y = v => h - (Math.min(100, Math.max(0, v ?? 0)) / 100) * (h - 4) - 2;
-  const line = (k, op) => `<polyline points="${samples.map(s => `${x(s.ts).toFixed(1)},${y(s[k]).toFixed(1)}`).join(' ')}"
-    fill="none" stroke="currentColor" stroke-opacity="${op}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">${line('mem', 0.55)}${line('cpu', 1)}</svg>`;
+// The curve shows one metric for every machine at once; the choice is kept per browser.
+const OVERVIEW_METRICS = [{key:'cpu', label:'CPU'}, {key:'mem', label:'内存'}, {key:'disk', label:'磁盘'}];
+const METRIC_KEY = 'panopticon.overviewMetric';
+let overviewMetric = 'cpu';
+try{
+  const saved = localStorage.getItem(METRIC_KEY);
+  if(OVERVIEW_METRICS.some(o => o.key === saved)) overviewMetric = saved;
+}catch(e){}
+
+// Gaps longer than this (three missed 30 s reports, as the offline rule) break the line, so an
+// outage reads as a hole rather than a straight ramp.
+const CURVE_GAP_S = 90;
+const CURVE_SPAN_S = 3600;
+function curve(samples, key){
+  const w = 600, h = 72;
+  const end = (lastData && lastData.ts) || Date.now()/1000, start = end - CURVE_SPAN_S;
+  const x = t => ((t - start) / CURVE_SPAN_S) * w;
+  const y = v => h - (Math.min(100, Math.max(0, v)) / 100) * (h - 4) - 2;
+  let d = '', prev = null;
+  samples.forEach(s => {
+    const v = s[key];
+    if(s.ts < start || v === undefined || v === null){ prev = null; return; }
+    d += `${prev === null || s.ts - prev > CURVE_GAP_S ? 'M' : 'L'}${x(s.ts).toFixed(1)},${y(v).toFixed(1)}`;
+    prev = s.ts;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <line x1="0" x2="${w}" y1="${h - 0.5}" y2="${h - 0.5}" stroke="var(--SystemBaseLow)" stroke-width="1" vector-effect="non-scaling-stroke"/>
+    <path d="${d}" fill="none" stroke="var(--SystemAccent)" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+function trend(p){
+  if(p.kind === 'nightcord-status'){
+    const targets = p.targets || [];
+    const down = targets.filter(t => t.status === 'down').length;
+    return `<div class="ov-trend"><div class="ov-readings">${stat(targets.length, '目标')}${stat(down, '故障', down ? 'warn' : '')}</div></div>`;
+  }
+  const th = thresholds(), m = machineMetrics(p), blank = noMetrics(p);
+  const readings = [['CPU', m.cpu, th.cpu], ['内存', m.mem, th.mem], ['磁盘', m.disk, th.disk]].map(([l, v, t]) =>
+    blank ? stat('-', l) : stat(escapeHtml(fmtPct(v)), l, levelOf(v, t))).join('');
+  const samples = tileHistory[p.name] || [];
+  return `<div class="ov-trend"><div class="ov-readings">${readings}</div>
+    <div class="ov-chart">${samples.length ? curve(samples, overviewMetric) : ''}</div>
+    <div class="ov-axis"><span>1 小时前</span><span>现在</span></div></div>`;
+}
+
+// Each machine is looked after by one of the 20 Project SEKAI characters, picked from its name so
+// it stays the same across reloads. Faces: [healthy, near a threshold, offline or needs attention].
+// Fan-made kaomoji written to each character's personality, not official art.
+const CHARACTERS = [
+  ['一歌', ['( ˘ᴗ˘ )♪', '(・_・;)', '(´；ω；`)']],
+  ['咲希', ['ヾ(≧▽≦*)o', '(°ロ°;)', '(｡>﹏<｡)']],
+  ['穗波', ['(◡‿◡✿)', '(´・_・`)', '(´；︵；`)']],
+  ['志步', ['( ¬_¬ )', '(￢_￢;)', '(╬Ò﹏Ó)']],
+  ['实乃理', ['ヽ(>∀<☆)ノ', '(๑•̀ㅂ•́)و', '(´；д；`)']],
+  ['遥', ['(・Θ・)', '( ・ー・)', '(・Θ・;)']],
+  ['爱莉', ['(￣ー￣)ｂ', '(｀へ´)', '(╬｀益´)']],
+  ['雫', ['(*´▽`*)', '(・・？)', '(｡•́︿•̀｡)']],
+  ['心羽', ['(•ᴗ•)', '(°ー°〃)', '(((;°Д°)))']],
+  ['杏', ['(ﾉ≧∀≦)ﾉ', '(・`ω´・)', '(ノ°益°)ノ']],
+  ['彰人', ['( ˘_˘ )', '(¬_¬")', '(╯°□°)╯']],
+  ['冬弥', ['( ・_・)', '( ・_・)？', '( ・_・;)']],
+  ['司', ['☆(｀▽´)☆', '(ﾟДﾟ;)', '(ノД`)']],
+  ['笑梦', ['(≧∇≦)/', '(・o・)？', '(ノ_<。)']],
+  ['宁宁', ['( -_-)', '(-_-;)', '(；´Д`)']],
+  ['类', ['(¬‿¬ )', '(ʘ‿ʘ)', '(⊙﹏⊙)']],
+  ['奏', ['( ˘ω˘ )', '(-ω-;)', '( ˘ω˘ )zzZ']],
+  ['真冬', ['(*^_^*)', '( ・ ・ )', '(　　　)']],
+  ['绘名', ['(๑•̀ω•́)✧', '(¬､¬)', '(ｷ`ﾟДﾟ´)!!']],
+  ['瑞希', ['(๑˃ᴗ˂)ﻭ', '(・ε・)', '(｡>ㅅ<｡)']],
+];
+function characterFor(name){
+  let h = 0;
+  for(const c of String(name)) h = (h * 31 + c.codePointAt(0)) >>> 0;
+  return CHARACTERS[h % CHARACTERS.length];
 }
 
 function tile(p){
   const href = `#m=${encodeURIComponent(p.name || '')}`;
   const name = escapeHtml(p.name || '未命名面板');
-  if(p.kind === 'nightcord-status'){
-    const s = stateOf(p);
-    const targets = p.targets || [];
-    const down = targets.filter(t => t.status === 'down').length;
-    return `<a class="tile clickable state-${s === 'warn' ? 'warn' : s === 'caution' ? 'caution' : 'ok'}" href="${href}">
-      <div class="tile-inner"><div class="readings">
-        <div class="reading"><div class="t-value">${targets.length}</div><div class="t-label">目标</div></div>
-        <div class="reading"><div class="t-value">${down}</div><div class="t-label">故障</div></div></div>
-        <div class="tile-label"><span class="name">${name}</span></div></div></a>`;
-  }
-  const offline = noMetrics(p);
-  const s = offline ? 'offline' : (stateOf(p) || 'ok');
-  const m = machineMetrics(p);
-  const samples = tileHistory[p.name] || [];
-  const seenAt = p.qingyuan && p.qingyuan.seen_at;
-  const front = offline
-    ? `<div class="reading"><div class="t-value">离线</div><div class="t-label">最后上报 ${escapeHtml(fmtAgo(seenAt))}</div></div>`
-    : [['CPU', m.cpu], ['内存', m.mem], ['磁盘', m.disk]].map(([l, v]) =>
-        `<div class="reading"><div class="t-value">${escapeHtml(fmtPct(v))}</div><div class="t-label">${l}</div></div>`).join('');
-  return `<a class="tile clickable state-${s}" href="${href}">
+  const down = p.kind === 'nightcord-status' ? p.online === false
+                                             : isOffline(p) || noMetrics(p);
+  const state = stateOf(p);
+  const look = p.kind !== 'nightcord-status' && noMetrics(p) ? 'offline' : (state || 'ok');
+  const [chara, faces] = characterFor(p.name || '');
+  const face = faces[down || state === 'warn' ? 2 : state === 'caution' ? 1 : 0];
+  return `<a class="tile clickable state-${look}" href="${href}">
     <div class="tile-inner">
-      <div class="readings">${front}</div>
-      ${samples.length >= 2 ? sparkline(samples) : ''}
-      <div class="tile-label"><span class="name">${name}</span>${offline ? ''
-        : `<span class="seen">${escapeHtml(isOffline(p) ? stateText(p) : fmtAgo(seenAt))}</span>`}</div>
+      <div class="t-state">${down ? '离线' : '在线'}</div>
+      <div class="face">${escapeHtml(face)}</div>
+      <div class="tile-label"><span class="chara">${chara}</span><span class="name">${name}</span></div>
     </div>
   </a>`;
 }
@@ -621,6 +678,12 @@ document.getElementById('content').addEventListener('click', e => {
   if(t){ const pre = t.nextElementSibling; pre.hidden = !pre.hidden; }
 });
 document.getElementById('content').addEventListener('change', e => {
+  if(e.target.id === 'overviewMetric'){
+    overviewMetric = e.target.value;
+    try{ localStorage.setItem(METRIC_KEY, overviewMetric); }catch(err){}
+    render(false);
+    return;
+  }
   if(e.target.name === 'range'){
     metricsRangeState[e.target.dataset.panel] = Number(e.target.value);
     loadChart(e.target.dataset.panel);

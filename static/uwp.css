@@ -67,7 +67,7 @@
   --control-min-height:32px;   /* TextControlThemeMinHeight */
   --pivot-header-height:48px;
   --list-item-min-height:40px;
-  --status-bar-height:40px;    /* AppBarThemeCompactHeight, same as PNS's command bar */
+  --status-bar-height:32px;    /* project: 40 (AppBarThemeCompactHeight) read too heavy under the denser overview */
 
   --decelerate:cubic-bezier(0.1,0.9,0.2,1);
   color-scheme:dark;
