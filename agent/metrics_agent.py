@@ -1,6 +1,6 @@
 """
 青源（Qingyuan）7.17-beta（内部开发代号 yukisakura）—— 自建系统指标监控 agent，
-跑在各面板服务器上（不是 Panopticon 主机），定时采集本机 CPU/内存/磁盘/网络，
+跑在各面板服务器上（不是 Panopticon 主机），定时采集本机 CPU/内存/磁盘/网络，以及 swap/负载/进程数/TCP 连接数/开机时间，
 push 给 Panopticon 的 /api/metrics/report。整体架构说明见仓库根目录 QINGYUAN.zh-CN.md。
 
 用法：
@@ -84,6 +84,65 @@ def collect_disk_detail():
     return detail
 
 
+_PROC_TCP_TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
+_TCP_ESTABLISHED_HEX = "01"  # /proc/net/tcp 第 4 列 st，01 = ESTABLISHED
+
+
+def count_established_tcp():
+    """
+    只数已建立（ESTABLISHED）的 TCP 连接，监听中、TIME_WAIT 这些不算。
+    Linux 上直接数 /proc/net/tcp{,6}：psutil.net_connections() 为了对上 pid 会扫遍所有进程的 fd，
+    机器一忙每分钟一次就不便宜。别的系统退回 psutil；拿不到（权限等）返回 None，前端显示 "-"。
+    """
+    if os.path.exists(_PROC_TCP_TABLES[0]):
+        total = 0
+        for path in _PROC_TCP_TABLES:
+            try:
+                with open(path, "r", encoding="ascii") as f:
+                    next(f, None)  # 表头
+                    total += sum(1 for line in f if line.split()[3:4] == [_TCP_ESTABLISHED_HEX])
+            except FileNotFoundError:
+                continue  # 没开 IPv6 时没有 tcp6
+            except OSError:
+                return None
+        return total
+    try:
+        return sum(1 for c in psutil.net_connections(kind="tcp") if c.status == psutil.CONN_ESTABLISHED)
+    except (psutil.AccessDenied, PermissionError, OSError):
+        return None
+
+
+def collect_system():
+    """
+    swap / 负载 / 进程数 / 连接数 / 开机时间。都是"拿不到就不报"：
+    Panopticon 对缺失的字段存 NULL、显示 "-"，不会因为某一项失败让整次上报失败。
+    swap_total 为 0 表示这台机器没开 swap，此时 swap 百分比报 None 而不是 0%。
+    """
+    out = {}
+    try:
+        sw = psutil.swap_memory()
+        out["swap_total"] = sw.total
+        out["swap"] = sw.percent if sw.total else None
+    except Exception:
+        pass
+    try:
+        out["load1"], out["load5"], out["load15"] = (round(v, 2) for v in os.getloadavg())
+    except (AttributeError, OSError):
+        pass  # Windows 没有 getloadavg
+    out["cores"] = psutil.cpu_count(logical=True)
+    try:
+        out["procs"] = len(psutil.pids())
+    except Exception:
+        pass
+    out["tcp_established"] = count_established_tcp()
+    try:
+        # 开机时间是绝对时间，Panopticon 拿它跟上一次比，变大了就是重启过
+        out["boot_time"] = int(psutil.boot_time())
+    except Exception:
+        pass
+    return out
+
+
 def collect(prev_net, prev_ts):
     """采集一次快照。网络吞吐由本次/上次 net_io_counters 的差值算出 kbps。"""
     cpu = psutil.cpu_percent(interval=1)
@@ -109,6 +168,7 @@ def collect(prev_net, prev_ts):
         "net_in_kbps": round(net_in_kbps, 2),
         "net_out_kbps": round(net_out_kbps, 2),
     }
+    sample.update(collect_system())
     return sample, net, now
 
 

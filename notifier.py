@@ -86,7 +86,7 @@ class Notifier:
                 continue  # 牵涉的机器移除过：它没恢复，只是不再盯了（或已是新一代），不发"已恢复"
             recovery = dict(alert)
             recovery["alert_type"] = f"{alert['alert_type']}已恢复"
-            recovery["content"] = f"{alert['content']}\n\n问题已解除，持续约 {_format_duration(now - alert['notified_at'])}。"
+            recovery["content"] = f"{alert['content']}\n\n问题已解除，持续约 {format_duration(now - alert['notified_at'])}。"
             self._send_feishu(recovery, template="green", mention_all=False)
             self._send_email(recovery)
 
@@ -138,6 +138,14 @@ class Notifier:
                 return
             self._active[alert["key"]] = dict(alert, notified_at=time.time(), generations=generations)
         self._send_feishu(alert)
+        self._send_email(alert)
+
+    def send_event(self, alert: dict, template: str = "orange"):
+        """
+        一次性事件（比如机器重启过）：不是"问题"，没有"恢复"，所以不进 _active、不走冷却，
+        直接发一条不 @所有人 的通知。
+        """
+        self._send_feishu(alert, template=template, mention_all=False)
         self._send_email(alert)
 
     # ---- 飞书自定义机器人 ----
@@ -242,7 +250,7 @@ class Notifier:
             print(f"[notifier] 邮件推送失败: {e}")
 
 
-def _format_duration(seconds: float) -> str:
+def format_duration(seconds: float) -> str:
     minutes = max(1, round(seconds / 60))
     if minutes < 60:
         return f"{minutes} 分钟"

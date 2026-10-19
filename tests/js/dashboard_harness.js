@@ -44,7 +44,7 @@ function fetch(url){
 }
 
 const api = new Function('document', 'window', 'location', 'fetch', 'setInterval',
-  script + '; return {refresh};')(document, window, location, fetch, () => 0);
+  script + '; return {refresh, machinesView, overviewItem, panels};')(document, window, location, fetch, () => 0);
 
 const tick = () => new Promise(r => setTimeout(r, 0));
 const summary = () => document.getElementById('statusSummary').textContent;
@@ -69,6 +69,21 @@ const summary = () => document.getElementById('statusSummary').textContent;
   responses.push({data: status(now - 600)});
   await api.refresh(false); await tick();
   out.oldData = summary();
+
+  // A current agent with swap / load / processes, one without swap, and an old agent with none of it.
+  const rich = {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now, swap: 12.5, swap_total: 2147483648,
+    load1: 0.42, load5: 0.3, load15: 0.25, cores: 4, procs: 187, tcp_established: 23, boot_time: now - 90000};
+  responses.push({data: {ts: now, thresholds: {cpu: 90, mem: 90, disk: 85}, panels: [
+    {name: 'new', kind: 'qingyuan-only', online: true, qingyuan: rich},
+    {name: 'noswap', kind: 'qingyuan-only', online: true, qingyuan: {...rich, swap: null, swap_total: 0}},
+    {name: 'old', kind: 'qingyuan-only', online: true, qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now}},
+  ]}});
+  await api.refresh(false); await tick();
+  out.machines = api.machinesView();
+  const byName = n => api.panels().find(p => p.name === n);
+  out.overviewNew = api.overviewItem(byName('new'));
+  out.overviewNoSwap = api.overviewItem(byName('noswap'));
+  out.overviewOld = api.overviewItem(byName('old'));
 
   process.stdout.write(JSON.stringify(out));
 })();

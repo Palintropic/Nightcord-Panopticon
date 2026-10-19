@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS agent_retired (
   retired_at INTEGER NOT NULL
 );
 
+-- 只存最新一份、不需要历史的系统信息：开机时间（判断重启）、核数（把负载折算成每核百分比）、swap 总量
+-- （0 = 没开 swap）。新版 agent 才会报，老 agent / ESXi 上报器没有这一行。
+CREATE TABLE IF NOT EXISTS agent_system (
+  panel TEXT PRIMARY KEY,
+  boot_time INTEGER,
+  cores INTEGER,
+  swap_total INTEGER
+);
+
 -- Nightcord-Status（2702）推过来的最新一份目标状态，一个来源一行，只留最新。
 -- received_at 是 Panopticon 收到时的服务器时间，判断 2702 有没有失联用。
 CREATE TABLE IF NOT EXISTS status_push (
@@ -59,6 +68,19 @@ CREATE TABLE IF NOT EXISTS status_push (
   body_json TEXT NOT NULL
 );
 """
+
+
+# metrics 表后来加的列：老 agent 和 ESXi 上报器不带这些字段，一律可空，缺了就是 NULL。
+EXTRA_METRIC_COLUMNS = (
+    ("swap", "REAL"),
+    ("load1", "REAL"),
+    ("load5", "REAL"),
+    ("load15", "REAL"),
+    ("procs", "INTEGER"),
+    ("tcp_established", "INTEGER"),
+)
+_EXTRA_NAMES = tuple(name for name, _ in EXTRA_METRIC_COLUMNS)
+_SAMPLE_COLUMNS = ("ts", "cpu", "mem", "disk", "net_in_kbps", "net_out_kbps") + _EXTRA_NAMES
 
 
 def _connect():
@@ -73,6 +95,10 @@ def init_db():
         columns = [r["name"] for r in conn.execute("PRAGMA table_info(agent_last_seen)")]
         if "generation" not in columns:  # 早期版本建的表没有这一列
             conn.execute("ALTER TABLE agent_last_seen ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
+        metric_columns = {r["name"] for r in conn.execute("PRAGMA table_info(metrics)")}
+        for name, sql_type in EXTRA_METRIC_COLUMNS:
+            if name not in metric_columns:
+                conn.execute(f"ALTER TABLE metrics ADD COLUMN {name} {sql_type}")
         # 升级前就在上报的机器还没有 agent_last_seen 记录，用历史里最新一条样本补上，
         # 否则它们要等下一次上报才会出现在"应该在线"的名单里。历史里的 ts 是 agent 自报的，
         # 时钟跑快的 agent 会留下未来时间，回填时封顶到现在，不然它停报后会一直显示在线
@@ -85,18 +111,50 @@ def init_db():
         )
 
 
-def insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps):
+def insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps, extra=None):
+    """extra：EXTRA_METRIC_COLUMNS 里的字段，缺哪个就存 NULL。"""
+    extra = extra or {}
+    values = (panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps) + tuple(extra.get(n) for n in _EXTRA_NAMES)
+    columns = ("panel",) + _SAMPLE_COLUMNS
+    updates = ", ".join(f"{c}=excluded.{c}" for c in _SAMPLE_COLUMNS[1:])
     with _connect() as conn:
         conn.execute(
-            """
-            INSERT INTO metrics (panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(panel, ts) DO UPDATE SET
-              cpu=excluded.cpu, mem=excluded.mem, disk=excluded.disk,
-              net_in_kbps=excluded.net_in_kbps, net_out_kbps=excluded.net_out_kbps
+            f"""
+            INSERT INTO metrics ({", ".join(columns)}) VALUES ({", ".join("?" * len(columns))})
+            ON CONFLICT(panel, ts) DO UPDATE SET {updates}
             """,
-            (panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps),
+            values,
         )
+
+
+def update_system(panel, boot_time, cores, swap_total):
+    """
+    记下最新的开机时间 / 核数 / swap 总量，返回之前记的开机时间（第一次报或之前没报过就是 None）。
+    读旧值和写新值在同一个事务里，两个并发上报不会都拿到同一个旧值、各发一次重启通知。
+    哪项这次没报（None）就保留原来的值。
+    """
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT boot_time FROM agent_system WHERE panel = ?", (panel,)).fetchone()
+        conn.execute(
+            """
+            INSERT INTO agent_system (panel, boot_time, cores, swap_total) VALUES (?, ?, ?, ?)
+            ON CONFLICT(panel) DO UPDATE SET
+              boot_time=COALESCE(excluded.boot_time, agent_system.boot_time),
+              cores=COALESCE(excluded.cores, agent_system.cores),
+              swap_total=COALESCE(excluded.swap_total, agent_system.swap_total)
+            """,
+            (panel, boot_time, cores, swap_total),
+        )
+        return row["boot_time"] if row else None
+
+
+def get_system(panel):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT boot_time, cores, swap_total FROM agent_system WHERE panel = ?", (panel,)
+        ).fetchone()
+        return dict(row) if row else {"boot_time": None, "cores": None, "swap_total": None}
 
 
 def mark_seen(panel, seen_at):
@@ -222,8 +280,8 @@ def get_disk_detail(panel):
 def get_latest(panel):
     with _connect() as conn:
         row = conn.execute(
-            """
-            SELECT ts, cpu, mem, disk, net_in_kbps, net_out_kbps
+            f"""
+            SELECT {", ".join(_SAMPLE_COLUMNS)}
             FROM metrics WHERE panel = ? ORDER BY ts DESC LIMIT 1
             """,
             (panel,),
@@ -234,8 +292,8 @@ def get_latest(panel):
 def query_history(panel, since_ts):
     with _connect() as conn:
         rows = conn.execute(
-            """
-            SELECT ts, cpu, mem, disk, net_in_kbps, net_out_kbps
+            f"""
+            SELECT {", ".join(_SAMPLE_COLUMNS)}
             FROM metrics WHERE panel = ? AND ts >= ?
             ORDER BY ts ASC
             """,
