@@ -29,6 +29,11 @@ dashboard_auth:
   password_hash: "用 gen_password_hash.py 生成，不要直接写明文密码"
   max_attempts: 5                # 同一 IP 连续失败这么多次后锁定
   lockout_seconds: 900           # 锁定时长（秒），默认 15 分钟
+  # 经别的机器上的反代访问时（比如东京的 Caddy 走 WireGuard 转到这里），把那台机器的地址写在这里。
+  # 只有从这些地址来的请求才信 X-Forwarded-For（防爆破按真实来源 IP 锁）和 X-Forwarded-Proto
+  # （Passkey 要认出 https）。不写的话所有访问者都会被当成反代那一台，一个人输错就锁住所有人。
+  # 本机 127.0.0.1 / ::1 总是信任。设置页不改这一项，保存设置也不会抹掉它。
+  # trusted_proxies: ["10.10.0.3"]
 
 # 自建监控 agent（agent/metrics_agent.py，跑在各台服务器上）上报系统指标历史的接收端配置。
 # agent 侧的 agent_config.yaml 里 shared_secret 要跟这里填的一致。

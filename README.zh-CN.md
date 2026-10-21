@@ -94,6 +94,8 @@ WireGuard 内网地址上报（`metrics_agent.report_url`，例如 `http://10.10
 2. **你自己怎么看看板**：连上 WireGuard 直接访问内网地址最省事；要长期公网访问的话，前面放 Nginx + HTTPS
    反代，并且**一定要打开下一节的登录验证**。反代时别把 `/api/metrics/report`、`/api/status/report`、
    `/api/agents/heartbeat` 转出去（它们不走登录，只认密钥 / token），让它们只在 WireGuard 里可达。
+   反代在别的机器上时，把那台机器的地址写进 `dashboard_auth.trusted_proxies`，不然所有访问者都会被当成
+   反代那一台，一个人输错密码就会锁住所有人。
 
 ### Panopticon 自身的登录验证 + 防暴力破解
 

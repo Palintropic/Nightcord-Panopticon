@@ -113,6 +113,46 @@ class LeftoverPanelsTests(AppTestCase):
         self.assertNotIn("panels", merged)
 
 
+class ProxyLoginTests(AppTestCase):
+    """Through a reverse proxy on another machine, lockout must follow the real client, not the proxy."""
+
+    def setUp(self):
+        super().setUp()
+        app._brute_force_guard._fails.clear()
+        app._brute_force_guard._lockouts.clear()
+        from werkzeug.security import generate_password_hash
+        self.write_config({"dashboard_auth": {"enabled": True, "username": "mizuki", "max_attempts": 2,
+                                              "password_hash": generate_password_hash("right"),
+                                              "trusted_proxies": ["10.10.0.3"]}})
+
+    def login(self, client_ip, password):
+        return self.client.post("/login", json={"username": "mizuki", "password": password},
+                                environ_base={"REMOTE_ADDR": "10.10.0.3"},
+                                headers={"X-Forwarded-For": client_ip, "X-Forwarded-Proto": "https"})
+
+    def test_one_client_locking_itself_out_does_not_lock_others(self):
+        for _ in range(2):
+            self.login("203.0.113.9", "wrong")
+        self.assertEqual(self.login("203.0.113.9", "right").status_code, 429)
+        self.assertEqual(self.login("198.51.100.20", "right").status_code, 200)
+
+    def test_direct_client_cannot_pick_its_lockout_key(self):
+        for i in range(2):
+            self.client.post("/login", json={"username": "mizuki", "password": "wrong"},
+                             environ_base={"REMOTE_ADDR": "198.51.100.77"},
+                             headers={"X-Forwarded-For": f"192.0.2.{i}"})
+        res = self.client.post("/login", json={"username": "mizuki", "password": "right"},
+                               environ_base={"REMOTE_ADDR": "198.51.100.77"},
+                               headers={"X-Forwarded-For": "192.0.2.200"})
+        self.assertEqual(res.status_code, 429)
+
+    def test_saving_settings_keeps_trusted_proxies(self):
+        from config_editor import merge_submitted
+        merged, errors = merge_submitted(app.load_config(), {"dashboard_auth": {"enabled": True}})
+        self.assertEqual(errors, [])
+        self.assertEqual(merged["dashboard_auth"]["trusted_proxies"], ["10.10.0.3"])
+
+
 class DeployTests(AppTestCase):
     def test_one_click_deploy_reaches_the_installer(self):
         self.write_config({"metrics_agent": {"enabled": True, "shared_secret": "s3cret",

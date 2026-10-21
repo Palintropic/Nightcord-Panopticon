@@ -197,8 +197,14 @@ apt install certbot python3-certbot-nginx -y
 certbot --nginx -d panopticon.yourdomain.com
 ```
 
-`auth.py` 里的 `get_client_ip()` 会优先读 `X-Forwarded-For`，配合上面 Nginx 配置，暴力破解锁定
-统计的是访问者真实 IP，而不是 Nginx 自己的回环地址。
+`auth.py` 里的 `get_client_ip()` 会读受信反代带来的 `X-Forwarded-For`，配合上面 Nginx 配置，暴力破解锁定
+统计的是访问者真实 IP，而不是 Nginx 自己的回环地址；`X-Forwarded-Proto` 也只信受信反代的，Passkey 要靠它认出 https。
+
+反代如果不在这台机器上（比如东京的 Caddy 走 WireGuard 转到 `10.10.0.1:1810`），要把那台机器的
+WireGuard 地址写进 `dashboard_auth.trusted_proxies`（例如 `["10.10.0.3"]`）。本机回环总是受信，别的地址
+默认不信；不写的话所有访问者都会被当成反代那一台，一个人输错密码就会锁住所有人。反代前面还有 Cloudflare
+的话，由反代自己从 `CF-Connecting-IP` 取真实 IP，再用 `X-Forwarded-For` 传过来（Caddy 写
+`header_up X-Forwarded-For {client_ip}`，并在全局 `servers` 里把 Cloudflare 的网段配成 `trusted_proxies`）。
 
 ---
 
