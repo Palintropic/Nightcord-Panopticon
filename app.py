@@ -19,7 +19,7 @@ from werkzeug.security import check_password_hash
 import webauthn_manager as wam
 from nightcord_status_client import NightcordStatusClient
 from notifier import Notifier, evaluate_status_alerts, format_duration, nightcord_target_key_prefix, plan_agent_alerts
-from auth import BruteForceGuard, get_client_ip
+from auth import BruteForceGuard, ForwardedProto, get_client_ip, trusted_proxies_from
 from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance, kaomoji_of, clean_kaomoji
 from agent_deploy import deploy_agent, AgentDeployError
 import agent_hosts
@@ -109,6 +109,18 @@ def ensure_session_secret():
 app.secret_key = ensure_session_secret()
 
 
+def _current_trusted_proxies():
+    # 跑在所有路由前面（包括 agent 上报这些机器接口）：配置缺失或 YAML 写坏了都只退回"只信本机"，
+    # 不能让它把每个请求都变成 500
+    try:
+        return trusted_proxies_from(load_config())
+    except Exception:
+        return trusted_proxies_from({})
+
+
+app.wsgi_app = ForwardedProto(app.wsgi_app, _current_trusted_proxies)
+
+
 @app.before_request
 def enforce_auth():
     """
@@ -148,7 +160,7 @@ def login_page():
 def login_password():
     cfg = load_config()
     auth_cfg = cfg.get("dashboard_auth", {})
-    ip = get_client_ip(request)
+    ip = get_client_ip(request, trusted_proxies_from(cfg))
     locked, retry_after = _brute_force_guard.is_locked(ip)
     if locked:
         resp = jsonify({"error": f"失败次数过多，请 {retry_after} 秒后再试。"})
@@ -246,7 +258,7 @@ def webauthn_delete_passkey(credential_id):
 def webauthn_login_options():
     cfg = load_config()
     auth_cfg = cfg.get("dashboard_auth", {})
-    ip = get_client_ip(request)
+    ip = get_client_ip(request, trusted_proxies_from(cfg))
     locked, retry_after = _brute_force_guard.is_locked(ip)
     if locked:
         resp = jsonify({"error": f"失败次数过多，请 {retry_after} 秒后再试。"})
@@ -264,7 +276,7 @@ def webauthn_login_options():
 def webauthn_login_verify():
     cfg = load_config()
     auth_cfg = cfg.get("dashboard_auth", {})
-    ip = get_client_ip(request)
+    ip = get_client_ip(request, trusted_proxies_from(cfg))
     locked, retry_after = _brute_force_guard.is_locked(ip)
     if locked:
         resp = jsonify({"error": f"失败次数过多，请 {retry_after} 秒后再试。"})

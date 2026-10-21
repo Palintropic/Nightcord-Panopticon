@@ -102,7 +102,9 @@ never cross the public internet.
 2. **How you reach the dashboard**: over WireGuard is simplest. For long-term public access, put Nginx +
    HTTPS in front and **turn on the login in the next section**. Don't proxy `/api/metrics/report`,
    `/api/status/report` or `/api/agents/heartbeat` to the public (they skip the login and check only a
-   secret / token); keep them reachable from WireGuard only.
+   secret / token); keep them reachable from WireGuard only. If the proxy runs on another machine, list
+   its address in `dashboard_auth.trusted_proxies`, or every visitor looks like the proxy and one wrong
+   password locks everyone out.
 
 ### Login + brute-force protection on Panopticon itself
 

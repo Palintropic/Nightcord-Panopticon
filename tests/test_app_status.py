@@ -12,6 +12,7 @@ metrics_store.DB_PATH = os.path.join(_TMP.name, "metrics.db")
 import yaml  # noqa: E402
 
 import app  # noqa: E402
+from auth import ForwardedProto  # noqa: E402
 
 
 class AppTestCase(unittest.TestCase):
@@ -111,6 +112,68 @@ class LeftoverPanelsTests(AppTestCase):
         merged, errors = merge_submitted(self.OLD, {"panels": [{"name": "x", "url": "http://x"}]})
         self.assertEqual(errors, [])
         self.assertNotIn("panels", merged)
+
+
+class ProxyLoginTests(AppTestCase):
+    """Through a reverse proxy on another machine, lockout must follow the real client, not the proxy."""
+
+    def setUp(self):
+        super().setUp()
+        app._brute_force_guard._fails.clear()
+        app._brute_force_guard._lockouts.clear()
+        from werkzeug.security import generate_password_hash
+        self.write_config({"dashboard_auth": {"enabled": True, "username": "mizuki", "max_attempts": 2,
+                                              "password_hash": generate_password_hash("right"),
+                                              "trusted_proxies": ["10.10.0.3"]}})
+
+    def login(self, client_ip, password):
+        return self.client.post("/login", json={"username": "mizuki", "password": password},
+                                environ_base={"REMOTE_ADDR": "10.10.0.3"},
+                                headers={"X-Forwarded-For": client_ip, "X-Forwarded-Proto": "https"})
+
+    def test_one_client_locking_itself_out_does_not_lock_others(self):
+        for _ in range(2):
+            self.login("203.0.113.9", "wrong")
+        self.assertEqual(self.login("203.0.113.9", "right").status_code, 429)
+        self.assertEqual(self.login("198.51.100.20", "right").status_code, 200)
+
+    def test_direct_client_cannot_pick_its_lockout_key(self):
+        for i in range(2):
+            self.client.post("/login", json={"username": "mizuki", "password": "wrong"},
+                             environ_base={"REMOTE_ADDR": "198.51.100.77"},
+                             headers={"X-Forwarded-For": f"192.0.2.{i}"})
+        res = self.client.post("/login", json={"username": "mizuki", "password": "right"},
+                               environ_base={"REMOTE_ADDR": "198.51.100.77"},
+                               headers={"X-Forwarded-For": "192.0.2.200"})
+        self.assertEqual(res.status_code, 429)
+
+    def test_broken_config_falls_back_to_loopback_in_the_middleware(self):
+        # The middleware runs before every route; a YAML error there must not turn into a 500 by itself.
+        with open(app.CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write("dashboard_auth: [unclosed\n")
+        self.assertEqual(app._current_trusted_proxies(), {"127.0.0.1", "::1"})
+        seen = {}
+
+        def inner(environ, start_response):
+            seen["scheme"] = environ["wsgi.url_scheme"]
+            return [b""]
+
+        # Same wiring as app.wsgi_app: the wrapper must pass the request on, with 10.10.0.3 untrusted.
+        environ = {"REMOTE_ADDR": "10.10.0.3", "wsgi.url_scheme": "http", "HTTP_X_FORWARDED_PROTO": "https"}
+        ForwardedProto(inner, app._current_trusted_proxies)(environ, lambda *a: None)
+        self.assertEqual(seen["scheme"], "http")
+        self.assertIsInstance(app.app.wsgi_app, ForwardedProto)
+
+    def test_saving_settings_keeps_an_empty_trusted_proxies(self):
+        from config_editor import merge_submitted
+        merged, _ = merge_submitted({"dashboard_auth": {"trusted_proxies": []}}, {"dashboard_auth": {}})
+        self.assertEqual(merged["dashboard_auth"]["trusted_proxies"], [])
+
+    def test_saving_settings_keeps_trusted_proxies(self):
+        from config_editor import merge_submitted
+        merged, errors = merge_submitted(app.load_config(), {"dashboard_auth": {"enabled": True}})
+        self.assertEqual(errors, [])
+        self.assertEqual(merged["dashboard_auth"]["trusted_proxies"], ["10.10.0.3"])
 
 
 class DeployTests(AppTestCase):

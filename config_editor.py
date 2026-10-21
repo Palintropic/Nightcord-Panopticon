@@ -81,6 +81,8 @@ def merge_submitted(old_cfg: dict, submitted: dict):
         merged_da["session_secret"] = old_da["session_secret"]
     if old_da.get("passkeys"):
         merged_da["passkeys"] = old_da["passkeys"]
+    if "trusted_proxies" in old_da:
+        merged_da["trusted_proxies"] = old_da["trusted_proxies"]  # 只能手改 config.yaml，见 auth.trusted_proxies_from
     new_password = _clean_str(da_in.get("new_password"))
     if new_password:
         merged_da["password_hash"] = generate_password_hash(new_password)

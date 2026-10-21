@@ -1,9 +1,8 @@
 """
-Dashboard 自身的登录保护：HTTP Basic Auth + 按 IP 的暴力破解锁定。
+Dashboard 自身的登录保护：按 IP 的暴力破解锁定，以及经反代访问时怎么认出真实来源。
 
-设计取舍：Panopticon 现在要长期暴露公网，它本身又握着能连进 WireGuard 内网、
-调用所有面板 API 的凭证，所以哪怕是个人自用也不能裸奔——至少要有登录门槛，
-并且防止别人对着登录框无限重试密码。
+设计取舍：Panopticon 可能经反代暴露公网，它本身又握着 agent 的共享密钥和记住的 SSH 密码，
+所以哪怕是个人自用也不能裸奔——至少要有登录门槛，并且防止别人对着登录框无限重试密码。
 """
 import threading
 import time
@@ -43,7 +42,46 @@ class BruteForceGuard:
             self._lockouts.pop(ip, None)
 
 
-def get_client_ip(request, trusted_proxies=frozenset({"127.0.0.1", "::1"})) -> str:
+LOOPBACK_PROXIES = frozenset({"127.0.0.1", "::1"})
+
+
+def trusted_proxies_from(cfg) -> frozenset:
+    """
+    反代地址：只有从这些地址来的请求，才信它带的 X-Forwarded-For / X-Forwarded-Proto。
+    本机回环总是信；经别的机器转发（比如东京的 Caddy 走 WireGuard 转过来）时，把那台机器的
+    地址写进 dashboard_auth.trusted_proxies。直连 1810 的请求自己带这些头不会被当真。
+    """
+    extra = ((cfg or {}).get("dashboard_auth") or {}).get("trusted_proxies") or []
+    if not isinstance(extra, (list, tuple)):
+        extra = [extra]
+    return LOOPBACK_PROXIES | {str(x).strip() for x in extra if x is not None and str(x).strip()}
+
+
+def _rightmost(header_value):
+    values = [v.strip() for v in (header_value or "").split(",") if v.strip()]
+    return values[-1] if values else None
+
+
+class ForwardedProto:
+    """
+    WSGI 中间件：请求来自受信反代时，按 X-Forwarded-Proto 设置 wsgi.url_scheme。
+    经 HTTPS 反代访问时，WebAuthn 校验的 origin（见 webauthn_manager.origin_from_request）
+    才是浏览器看到的 https://，不然 Passkey 注册和登录都会对不上。
+    trusted_proxies() 每次请求现取，配置改了不用重启。
+    """
+
+    def __init__(self, wsgi_app, trusted_proxies):
+        self.wsgi_app = wsgi_app
+        self.trusted_proxies = trusted_proxies
+
+    def __call__(self, environ, start_response):
+        proto = (_rightmost(environ.get("HTTP_X_FORWARDED_PROTO")) or "").lower()
+        if proto in ("http", "https") and environ.get("REMOTE_ADDR") in self.trusted_proxies():
+            environ["wsgi.url_scheme"] = proto
+        return self.wsgi_app(environ, start_response)
+
+
+def get_client_ip(request, trusted_proxies=LOOPBACK_PROXIES) -> str:
     """Return the client IP, accepting forwarding headers only from a trusted proxy.
 
     A public client can send arbitrary ``X-Forwarded-For`` headers.  When the
@@ -53,9 +91,7 @@ def get_client_ip(request, trusted_proxies=frozenset({"127.0.0.1", "::1"})) -> s
     """
     remote_addr = request.remote_addr or "unknown"
     if remote_addr in trusted_proxies:
-        xff = request.headers.get("X-Forwarded-For")
-        if xff:
-            forwarded = [value.strip() for value in xff.split(",") if value.strip()]
-            if forwarded:
-                return forwarded[-1]
+        forwarded = _rightmost(request.headers.get("X-Forwarded-For"))
+        if forwarded:
+            return forwarded
     return remote_addr
