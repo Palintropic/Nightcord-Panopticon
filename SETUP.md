@@ -87,10 +87,12 @@ Don't leave `python app.py` running in a foreground terminal long-term:
 
 ```bash
 pip install gunicorn
-gunicorn -w 2 -b 127.0.0.1:1810 app:app
+gunicorn -w 2 -b 0.0.0.0:1810 app:app
 ```
 
-A full example with systemd process management and Nginx + Let's Encrypt HTTPS is in step 3 of [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese, but the commands are copy-pasteable).
+Listening on `0.0.0.0` lets agents reach it over WireGuard; keep port 1810 firewalled to the WireGuard interface (`ufw allow in on wg0 to any port 1810 proto tcp`) and closed to the public.
+
+A full example with systemd process management and Nginx + Let's Encrypt HTTPS is in step 2 of [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese, but the commands are copy-pasteable).
 
 > Note: Gunicorn only serves HTTP. If you want both Gunicorn and alerting, run `python worker.py` as a second service; it runs the periodic jobs without binding another HTTP port (also covered in DEPLOY.zh-CN.md).
 

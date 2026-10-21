@@ -96,11 +96,14 @@ python gen_password_hash.py "你的密码"
 
 ```bash
 pip install gunicorn
-gunicorn -w 2 -b 127.0.0.1:1810 app:app
+gunicorn -w 2 -b 0.0.0.0:1810 app:app
 ```
 
+监听 `0.0.0.0` 是为了让 agent 能从 WireGuard 连进来；1810 端口防火墙只放行 WireGuard 网卡
+（`ufw allow in on wg0 to any port 1810 proto tcp`），不对公网开放。
+
 用 systemd 管理进程、Nginx 反代 + Let's Encrypt 签 HTTPS 的完整示例配置见
-[DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) 第三步。
+[DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) 第二步。
 
 > 注意：Gunicorn 只提供 HTTP 服务。要同时使用 Gunicorn 和告警功能，请另起一个 `python worker.py`
 > 服务；它只跑巡检任务，不会再绑定 HTTP 端口。

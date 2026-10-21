@@ -449,6 +449,7 @@ function route(){
   const s = location.hash.match(/^#s=(\w+)$/);
   const key = s && (s[1] === 'appearance' ? 'theme' : s[1]);   // 外观 became 主题
   if(key && SETTINGS_PAGES.some(x => x.key === key)) return {view:'settings', page:key};
+  if(key) return {view:'list', pivot:SETTINGS_PIVOT};   // a page that no longer exists, e.g. #s=panels
   const m = location.hash.match(/^#m=(.*)$/);
   if(m){
     try{ return {view:'detail', name:decodeURIComponent(m[1])}; }

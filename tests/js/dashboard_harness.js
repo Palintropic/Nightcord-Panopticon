@@ -44,7 +44,7 @@ function fetch(url){
 }
 
 const api = new Function('document', 'window', 'location', 'fetch', 'setInterval',
-  script + '; return {refresh, machinesView, overviewItem, panels};')(document, window, location, fetch, () => 0);
+  script + '; return {refresh, machinesView, overviewItem, panels, route};')(document, window, location, fetch, () => 0);
 
 const tick = () => new Promise(r => setTimeout(r, 0));
 const summary = () => document.getElementById('statusSummary').textContent;
@@ -84,6 +84,12 @@ const summary = () => document.getElementById('statusSummary').textContent;
   out.overviewNew = api.overviewItem(byName('new'));
   out.overviewNoSwap = api.overviewItem(byName('noswap'));
   out.overviewOld = api.overviewItem(byName('old'));
+
+  out.routes = {};
+  for(const hash of ['#s=notify', '#s=appearance', '#s=panels', '#s=bogus']){
+    location._hash = hash;
+    out.routes[hash] = api.route();
+  }
 
   process.stdout.write(JSON.stringify(out));
 })();

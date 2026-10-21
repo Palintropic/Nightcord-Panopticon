@@ -29,6 +29,13 @@ class DashboardStatusBarTests(unittest.TestCase):
         self.assertNotIn("刷新失败", self.steps["oldData"])
 
 
+    def test_removed_settings_pages_land_on_the_settings_list(self):
+        routes = self.steps["routes"]
+        self.assertEqual(routes["#s=notify"], {"view": "settings", "page": "notify"})
+        self.assertEqual(routes["#s=appearance"], {"view": "settings", "page": "theme"})
+        self.assertEqual(routes["#s=panels"], {"view": "list", "pivot": 5})
+        self.assertEqual(routes["#s=bogus"], {"view": "list", "pivot": 5})
+
     def _row(self, name):
         rows = self.steps["machines"].split('class="machine-row"')
         return next(r for r in rows if f'<span class="name">{name}</span>' in r)
