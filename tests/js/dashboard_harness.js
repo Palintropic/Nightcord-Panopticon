@@ -44,14 +44,14 @@ function fetch(url){
 }
 
 const api = new Function('document', 'window', 'location', 'fetch', 'setInterval',
-  script + '; return {refresh, machinesView, overviewItem, panels};')(document, window, location, fetch, () => 0);
+  script + '; return {refresh, machinesView, overviewItem, panels, route};')(document, window, location, fetch, () => 0);
 
 const tick = () => new Promise(r => setTimeout(r, 0));
 const summary = () => document.getElementById('statusSummary').textContent;
 
 (async () => {
   const now = Date.now() / 1000;
-  const status = ts => ({ts, panels: [{name: 'qy', kind: 'qingyuan-only', online: true,
+  const status = ts => ({ts, panels: [{name: 'qy', kind: 'qingyuan', online: true,
     qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: ts}}], thresholds: {cpu: 90, mem: 90, disk: 85}});
   const out = {};
 
@@ -74,9 +74,9 @@ const summary = () => document.getElementById('statusSummary').textContent;
   const rich = {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now, swap: 12.5, swap_total: 2147483648,
     load1: 0.42, load5: 0.3, load15: 0.25, cores: 4, procs: 187, tcp_established: 23, boot_time: now - 90000};
   responses.push({data: {ts: now, thresholds: {cpu: 90, mem: 90, disk: 85}, panels: [
-    {name: 'new', kind: 'qingyuan-only', online: true, qingyuan: rich},
-    {name: 'noswap', kind: 'qingyuan-only', online: true, qingyuan: {...rich, swap: null, swap_total: 0}},
-    {name: 'old', kind: 'qingyuan-only', online: true, qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now}},
+    {name: 'new', kind: 'qingyuan', online: true, qingyuan: rich},
+    {name: 'noswap', kind: 'qingyuan', online: true, qingyuan: {...rich, swap: null, swap_total: 0}},
+    {name: 'old', kind: 'qingyuan', online: true, qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now}},
   ]}});
   await api.refresh(false); await tick();
   out.machines = api.machinesView();
@@ -84,6 +84,12 @@ const summary = () => document.getElementById('statusSummary').textContent;
   out.overviewNew = api.overviewItem(byName('new'));
   out.overviewNoSwap = api.overviewItem(byName('noswap'));
   out.overviewOld = api.overviewItem(byName('old'));
+
+  out.routes = {};
+  for(const hash of ['#s=notify', '#s=appearance', '#s=panels', '#s=bogus']){
+    location._hash = hash;
+    out.routes[hash] = api.route();
+  }
 
   process.stdout.write(JSON.stringify(out));
 })();

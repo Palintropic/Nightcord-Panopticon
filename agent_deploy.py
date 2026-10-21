@@ -31,9 +31,7 @@ def deploy_agent(ip, port, ssh_user, password, report_url, shared_secret, log=No
     返回部署成功后使用的 panel_name（默认取自目标机器的 hostname，除非传了 panel_name_override）。
     失败抛 AgentDeployError。
 
-    panel_name_override：如果这台机器同时也是某个已配置的宝塔面板，应该传那个面板配置里的 name，
-    强制让青源上报用同一个名字——不然宝塔面板名字（管理员手打的）和青源 panel_name（自动读远端
-    hostname）是两套互不相干的命名，十有八九对不上，dashboard 上同一台机器会拆成两张卡片。
+    panel_name_override：重新部署时传上次用的 panel_name，让这台机器的名字不随 hostname 变。
     """
     def emit(line):
         if log:

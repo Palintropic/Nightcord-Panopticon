@@ -1,23 +1,8 @@
 # 复制为 config.yaml 后填写真实信息，config.yaml 不要提交到公开仓库/分享给他人
 #
-# 个人单人使用推荐架构：网站端口(80/443)保持公网，面板管理端口改为 18101 且完全对公网关闭，
-# 只信任 WireGuard 网段（ufw deny 18101/tcp + ufw allow in on wg0 to any port 18101）。
-# 这里的 url 请填面板在 WireGuard 内网里的地址（换成你自己的真实内网 IP），
-# 具体防火墙配置见 README「推荐架构」章节。
-panels:
-  - name: "香港-Web01"
-    url: "http://10.10.0.2:18101"      # 面板的 WireGuard 内网地址 + 改过的面板端口（换成你自己的真实值）
-    api_key: "在面板设置-API接口中获取的接口密钥"
-    verify_ssl: false                 # 流量已在 WireGuard 隧道内加密，面板用自签证书没问题
+# 机器指标全部来自青源 agent（见 metrics_agent 段和 QINGYUAN.zh-CN.md），在设置 → 部署里一键安装。
 
-  - name: "上海-DB01"
-    url: "http://10.10.0.3:18101"
-    api_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-    verify_ssl: false
-
-  # 可继续添加更多面板...
-
-# Nightcord-Status（2702，自建监控服务）接入，跟宝塔面板并列展示成一张独立卡片。
+# Nightcord-Status（2702，自建监控服务）接入，跟青源机器并列展示成一张独立卡片。
 # 它判定为故障的目标（ESXi、TCP、第三方 statuspage 等）会走下面的告警通知逐个报，恢复了发恢复通知。
 # 两种接法：
 #   source: push —— 推荐。2702 每轮采集完 POST 到 /api/status/report，请求头 X-Metrics-Secret
@@ -45,7 +30,7 @@ dashboard_auth:
   max_attempts: 5                # 同一 IP 连续失败这么多次后锁定
   lockout_seconds: 900           # 锁定时长（秒），默认 15 分钟
 
-# 自建监控 agent（agent/metrics_agent.py，跑在各面板服务器上）上报系统指标历史的接收端配置。
+# 自建监控 agent（agent/metrics_agent.py，跑在各台服务器上）上报系统指标历史的接收端配置。
 # agent 侧的 agent_config.yaml 里 shared_secret 要跟这里填的一致。
 metrics_agent:
   enabled: false
@@ -66,10 +51,10 @@ status_api:
   enabled: false
   token: "生成一个随机字符串，2702 那边配置同一个值"
 
-# 告警通知（面板离线 / CPU / 内存 / 磁盘超阈值时推送）
-# 阈值同时适用于宝塔面板和青源（自建 agent，见 metrics_agent 段）上报的机器。
+# 告警通知（机器离线 / CPU / 内存 / 磁盘超阈值时推送）
+# 阈值适用于青源（自建 agent，见 metrics_agent 段）上报的机器。
 notifications:
-  # 同一个问题（比如"面板A的CPU告警"）只在刚触发时发一次，问题没解决之前不会重复推送；
+  # 同一个问题（比如"机器A的CPU告警"）只在刚触发时发一次，问题没解决之前不会重复推送；
   # 这个值只在"问题解决后又复发"时起作用——两次触发间隔小于它，就当是抖动，先不通知。
   cooldown_seconds: 600
 

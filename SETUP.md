@@ -4,15 +4,14 @@
 
 A general guide for anyone deploying this project (not tied to any specific server or IP). If you
 want to see a concrete worked example, check [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese only) — it
-walks through a real "Shanghai + Japan, two BT Panel servers" setup. This document is the generic
-version.
+walks through a real Shanghai + Tokyo setup over WireGuard. This document is the generic version.
 
 ## Contents
 
 - [Requirements](#requirements)
 - [Quick start (local trial)](#quick-start-local-trial)
-- [Step 1: Enable the API on BT Panel](#step-1-enable-the-api-on-bt-panel)
-- [Step 2: Configure your panel list](#step-2-configure-your-panel-list)
+- [Step 1: Configure the dashboard](#step-1-configure-the-dashboard)
+- [Step 2: Install the Qingyuan agent](#step-2-install-the-qingyuan-agent)
 - [Step 3: Pick a security tier](#step-3-pick-a-security-tier)
 - [Step 4: Alerting (optional)](#step-4-alerting-optional)
 - [Production deployment](#production-deployment)
@@ -22,9 +21,9 @@ version.
 
 ## Requirements
 
-- Python 3.8+
-- One or more servers running BT Panel (any recent version — field names may vary slightly by version, but the core endpoints are stable)
-- Network reachability from the machine running this dashboard to each panel's admin port (same machine, LAN, or VPN all work)
+- Python 3.8+ for the dashboard
+- Linux servers to monitor, with `python3` (including the `venv` module) and `systemd` for the one-click agent installer, and SSH access to them
+- A network path from every monitored server to the dashboard's port 1810 (same machine, LAN, or a VPN such as WireGuard)
 
 ## Quick start (local trial)
 
@@ -36,53 +35,51 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Open `http://127.0.0.1:1810` in your browser. Since nothing is configured yet, it'll redirect you to `/setup`.
+Open `http://127.0.0.1:1810` in your browser. Since nothing is configured yet, the settings page asks you to set things up first.
 
-## Step 1: Enable the API on BT Panel
-
-For every panel you want to connect:
-
-1. Panel dashboard → Settings → API interface → turn it on, copy the API secret key.
-2. On the same page, set the **IP whitelist** to the IP of the machine running this dashboard (not the panel's own IP).
-   - Same machine as the panel → `127.0.0.1`.
-   - Different machine → whatever IP the panel sees that machine as (public IP, or an internal VPN/WireGuard IP if you've set one up — see the security tiers below).
-3. (Optional but recommended) move the panel's admin port off the default `8888` to cut down on opportunistic scanning.
-
-## Step 2: Configure your panel list
+## Step 1: Configure the dashboard
 
 Two options:
 
-**Option A: the visual settings page (recommended)**
-Start the service, open `http://<dashboard-address>:1810/setup`, fill in each panel's name/URL/API key, and save. It stays available afterward at `/settings` — come back any time to add panels, change alerting, or change the login password. When editing, leave secret fields blank to keep the existing value; saving never blanks out a stored secret.
+**Option A: the settings page (recommended)**
+Start the service, open `http://<dashboard-address>:1810`, and fill in the login password, alert thresholds and notifications from Settings. Come back any time to change them. When editing, leave secret fields blank to keep the existing value; saving never blanks out a stored secret.
 
 **Option B: edit the YAML by hand**
 ```bash
 cp config.example.yaml config.yaml
 ```
-Fill in `panels` / `dashboard_auth` / `notifications` per the comments in the file. The login password can't be plaintext — generate a hash first with `python gen_password_hash.py "your password"` and paste that in.
+Fill in `dashboard_auth` / `notifications` / `metrics_agent` per the comments in the file. The login password can't be plaintext — generate a hash first with `python gen_password_hash.py "your password"` and paste that in.
 
-Both options write to the same `config.yaml`, so you can mix and match — configure once through the UI, then hand-edit the YAML later for bulk changes (restart the process to pick them up).
+Both options write to the same `config.yaml`, so you can mix and match — configure once through the UI, then hand-edit the YAML later for bulk changes.
+
+## Step 2: Install the Qingyuan agent
+
+If the agent will run on a different machine from the dashboard, first set `metrics_agent.report_url` in `config.yaml` to the address that machine can reach the dashboard on (e.g. `http://10.10.0.1:1810` over WireGuard). Without it the installer guesses from the address you opened the settings page with, which is wrong when you came in through a tunnel or a reverse proxy.
+
+Then Settings → 部署 (Deploy): enter the server's IP, SSH port, user and password, and install. The log streams while it runs. Tick "remember the password" to be able to redeploy it later with one click (needed to pick up agent updates). The machine appears on the dashboard after its first report, about a minute later.
+
+Manual installation and the agent's own config are covered in [agent/README.zh-CN.md](agent/README.zh-CN.md); ESXi hosts are fed in by a separate reporter, see [ESXI_QINGYUAN_MONITORING.zh-CN.md](ESXI_QINGYUAN_MONITORING.zh-CN.md).
 
 ## Step 3: Pick a security tier
 
-The moment this dashboard is running, it holds credentials that can call every configured panel's API. Pick whichever tier matches your situation:
+The dashboard stores SSH passwords you chose to remember and the shared secret agents report with. Pick whichever tier matches your situation:
 
 | Situation | Approach |
 |---|---|
-| Just for you, dashboard and panels are on the same LAN or machine | `dashboard_auth.enabled: false` is fine — network unreachability is your protection, no need for HTTPS/VPN |
-| Dashboard needs to be public long-term, and you're okay with panels being public too | Turn on `dashboard_auth` (built-in login + brute-force lockout) + put Nginx + HTTPS in front, and lock each panel's IP whitelist down to the dashboard's fixed IP |
-| Dashboard needs to be public, but panel admin ports should never be reachable at all | Same as above, plus a private overlay network (WireGuard, Tailscale, etc.) between the dashboard and each panel, with panel admin ports firewalled to that private subnet only. See the WireGuard section of [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) for a worked example |
+| Just for you, dashboard and servers on the same LAN or machine | `dashboard_auth.enabled: false` is fine — network unreachability is your protection, no need for HTTPS/VPN |
+| Servers in different places, dashboard reached only over a VPN | Agents report over a private overlay network (WireGuard, Tailscale, etc.); firewall port 1810 to that subnet only. See [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) for a WireGuard example |
+| Dashboard needs to be public long-term | Same as above, plus `dashboard_auth` (built-in login + brute-force lockout) and Nginx + HTTPS in front. Don't proxy `/api/metrics/report`, `/api/status/report` or `/api/agents/heartbeat`: they skip the login and check only a secret / token |
 
 Whichever tier you're on, if the dashboard will ever be reached from the public internet, `dashboard_auth.enabled` must be on:
 
 ```bash
 python gen_password_hash.py "your password"
 ```
-Paste the output into `config.yaml` (or just set the password directly from the `/settings` page — easier).
+Paste the output into `config.yaml` (or just set the password from Settings → 登录 (Login) — easier).
 
 ## Step 4: Alerting (optional)
 
-Supports a Feishu custom-bot webhook and SMTP email, both configurable from `/settings` or the `notifications` section of `config.yaml`. Triggers on a panel going offline, or CPU/memory/disk usage crossing your configured threshold; each distinct alert has a cooldown to avoid spamming.
+Supports a Feishu custom-bot webhook and SMTP email, both configurable from Settings or the `notifications` section of `config.yaml`. Triggers when a machine stops reporting for 3 minutes, when CPU/memory/disk crosses your configured threshold, and when a machine reboots; a recovery notice follows when the problem clears. Each problem is sent once when it starts, not on every check.
 
 ## Production deployment
 
@@ -90,23 +87,22 @@ Don't leave `python app.py` running in a foreground terminal long-term:
 
 ```bash
 pip install gunicorn
-gunicorn -w 2 -b 127.0.0.1:1810 app:app
+gunicorn -w 2 -b 0.0.0.0:1810 app:app
 ```
 
-A full example with systemd process management and Nginx + Let's Encrypt HTTPS is in step 3 of [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese, but the commands are copy-pasteable).
+Listening on `0.0.0.0` lets agents reach it over WireGuard; keep port 1810 firewalled to the WireGuard interface (`ufw allow in on wg0 to any port 1810 proto tcp`) and closed to the public.
+
+A full example with systemd process management and Nginx + Let's Encrypt HTTPS is in step 2 of [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese, but the commands are copy-pasteable).
 
 > Note: Gunicorn only serves HTTP. If you want both Gunicorn and alerting, run `python worker.py` as a second service; it runs the periodic jobs without binding another HTTP port (also covered in DEPLOY.zh-CN.md).
 
 ## FAQ
 
-**Getting a signature error / failed request from a panel?**
-Usually a clock skew issue (the signing scheme uses a timestamp) — check that the dashboard's and the panel's system clocks are in sync (`timedatectl` / NTP).
-
-**Whose IP goes in the panel's IP whitelist?**
-The IP of the machine *making* the API request — i.e. wherever this dashboard runs — not the panel's own IP.
+**Deployed the agent but the machine never shows up?**
+Most often `metrics_agent.report_url` points somewhere the server can't reach. On the server, `journalctl -u nightcord-metrics-agent -f` shows each failed report; a `401` means the shared secret doesn't match, a `400` a malformed report.
 
 **Saved settings but nothing changed?**
-Saving via `/settings` clears the in-memory cache, so the next refresh picks up the new config automatically — no restart needed. If you hand-edited `config.yaml` instead, that also doesn't need a restart, since `app.py` re-reads the file on every request.
+Saving from the settings page clears the in-memory cache, so the next refresh picks up the new config automatically — no restart needed. If you hand-edited `config.yaml` instead, that also doesn't need a restart, since `app.py` re-reads the file on every request.
 
 **Forgot the dashboard login password?**
-Edit `config.yaml` directly, set `dashboard_auth.enabled` to `false`, restart once, log into `/settings` (no password needed now), generate a new hash with `gen_password_hash.py`, paste it in, and flip `enabled` back to `true`.
+Edit `config.yaml` directly, set `dashboard_auth.enabled` to `false`, restart once, open the settings page (no password needed now), generate a new hash with `gen_password_hash.py`, paste it in, and flip `enabled` back to `true`.

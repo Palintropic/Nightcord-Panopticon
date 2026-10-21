@@ -270,12 +270,6 @@
           <label class="field">SSH 账号<input type="text" id="deployUser" value="root"></label>
           <label class="field">密码<input type="password" id="deployPassword" placeholder="SSH 登录密码"></label>
         </div>
-        <div class="form-grid">
-          <label class="field">这台机器是不是某个宝塔面板？
-            <select id="deployBindPanel"><option value="">不绑定（用远端 hostname 当名字）</option></select>
-            <span class="field-hint">选了的话青源上报会用那个面板的名字，两边数据显示在同一张卡片上。</span>
-          </label>
-        </div>
         <label class="check"><input type="checkbox" id="deployRemember"> 记住这台服务器的密码（加密保存）</label>
         <div class="inline" style="margin-top:var(--gutter)">
           <button class="btn btn-accent" onclick="deployAgent()">一键安装</button>
@@ -317,16 +311,6 @@
       </div>
     </section>
 
-    <!-- 宝塔面板 -->
-    <section class="page" data-page="panels" hidden>
-      <div class="group">
-        <div class="description">可选数据源：宝塔面板的地址和 API 密钥。地址建议填 WireGuard 内网地址（如 <code>http://10.10.0.2:18101</code>）。
-          只用青源 agent 的话这里留空就行。</div>
-        <div id="panels"></div>
-        <button class="btn" onclick="addPanelRow()" style="margin-top:var(--gutter)">添加面板</button>
-        <div class="save-row"><button class="btn btn-accent save-btn" onclick="save()" disabled>保存</button><span class="save-msg"></span></div>
-      </div>
-    </section>
   </main>
   <footer class="status-bar">
     <a class="status-item status-alert" id="statusAlert" href="#p=1" hidden></a>
@@ -388,66 +372,30 @@ function levelOf(value, threshold){
   return '';
 }
 
-// Qingyuan data merged onto a BT card is ignored once the agent has gone quiet.
-function liveQingyuan(p){
-  const q = p.qingyuan;
-  if(!q) return null;
-  if(p.kind !== 'qingyuan-only' && q.online === false) return null;
-  return q;
-}
 function isOffline(p){ return p.online === false || (p.qingyuan && p.qingyuan.online === false); }
-// No usable numbers: an agent-only machine that stopped reporting (its numbers are stale), or a card
-// where no source produced any number at all. A BT card with a failed endpoint, or whose attached
-// agent went quiet, still shows whatever numbers it has, flagged with what is wrong.
+// No usable numbers: the agent stopped reporting (its numbers are stale), or it never sent any.
 function noMetrics(p){
-  if(p.kind === 'qingyuan-only') return !!(p.qingyuan && p.qingyuan.online === false);
+  if(isOffline(p)) return true;
   const m = machineMetrics(p);
   return [m.cpu, m.mem, m.disk].every(v => v === undefined || v === null);
 }
 
 
 function diskRows(p){
-  const q = liveQingyuan(p);
-  const qyDetail = (q && q.disk_detail && q.disk_detail.length)
+  const q = p.qingyuan;
+  if(!q) return [];
+  const detail = q.disk_detail && q.disk_detail.length
     ? q.disk_detail
-    : (q && q.disk !== undefined && q.disk !== null ? [{path:'/', total:null, used:null, percent:q.disk}] : []);
-  const qyMap = new Map(qyDetail.map(d => [d.path, d]));
-  const btPaths = new Set();
-  const rows = [];
-  (p.disk || []).forEach(d => {
-    btPaths.add(d.path);
-    const qy = qyMap.get(d.path);
-    if(qy){
-      rows.push({path:d.path, usedTotal:`${fmtBytes(qy.used)} / ${fmtBytes(qy.total)}`, percent:qy.percent});
-    } else {
-      const [total, used, , percentStr] = d.size || [];
-      rows.push({path:d.path || '-', usedTotal:`${used||'-'} / ${total||'-'}`, percent:parseInt(percentStr) || 0});
-    }
-  });
-  qyDetail.forEach(qy => {
-    if(btPaths.has(qy.path)) return;
-    rows.push({path:qy.path, usedTotal:`${fmtBytes(qy.used)} / ${fmtBytes(qy.total)}`, percent:qy.percent});
-  });
-  return rows;
+    : (q.disk !== undefined && q.disk !== null ? [{path:'/', total:null, used:null, percent:q.disk}] : []);
+  return detail.map(d => ({path:d.path, usedTotal:`${fmtBytes(d.used)} / ${fmtBytes(d.total)}`, percent:d.percent}));
 }
 
 function machineMetrics(p){
-  const q = liveQingyuan(p);
-  const sys = p.system || {};
-  const net = p.network || {};
-  const cpu = q && q.cpu !== null && q.cpu !== undefined ? q.cpu : (sys.cpuRealUsed ?? sys.CpuRealUsed ?? (net.cpu ? net.cpu[0] : undefined));
-  const qyMem = q && q.mem !== null && q.mem !== undefined;
-  const memUsed = sys.MemRealUsed ?? sys.memRealUsed, memTotal = sys.MemTotal ?? sys.memTotal;
-  const mem = qyMem ? q.mem : pct(memUsed, memTotal);
-  // BT reports absolute memory; keep "used / total" next to the percentage when that is the source.
-  const memText = !qyMem && memUsed !== undefined && memTotal ? `${memUsed}G / ${memTotal}G` : null;
+  const q = p.qingyuan || {};
   const disks = diskRows(p);
   const disk = disks.length ? Math.max(...disks.map(d => d.percent)) : undefined;
   // swap: null with swap_total 0 means the machine has no swap; an old agent reports neither.
-  const swap = q ? q.swap : undefined;
-  const noSwap = !!(q && q.swap_total === 0);
-  const load1 = q && q.load1 !== null && q.load1 !== undefined ? q.load1 : (net.load ? net.load.one : undefined);
-  return {cpu, mem, memText, disk, disks, swap, noSwap, load1};
+  return {cpu:q.cpu, mem:q.mem, disk, disks, swap:q.swap, noSwap:q.swap_total === 0, load1:q.load1};
 }
 
 // '' = healthy, 'caution' = near a threshold, 'warn' = needs attention.
@@ -495,13 +443,13 @@ const SETTINGS_PAGES = [
   {key:'agents', label:'青源机器', hint:'正在盯着的机器，移除退役的'},
   {key:'deploy', label:'部署', hint:'一键给服务器装青源 agent'},
   {key:'login', label:'登录', hint:'密码、Passkey'},
-  {key:'panels', label:'宝塔面板', hint:'可选的宝塔数据源'},
 ];
 // #p=<n> top-level pivot item, #m=<name> machine detail, #s=<key> settings page.
 function route(){
   const s = location.hash.match(/^#s=(\w+)$/);
   const key = s && (s[1] === 'appearance' ? 'theme' : s[1]);   // 外观 became 主题
   if(key && SETTINGS_PAGES.some(x => x.key === key)) return {view:'settings', page:key};
+  if(key) return {view:'list', pivot:SETTINGS_PIVOT};   // a page that no longer exists, e.g. #s=panels
   const m = location.hash.match(/^#m=(.*)$/);
   if(m){
     try{ return {view:'detail', name:decodeURIComponent(m[1])}; }
@@ -635,20 +583,20 @@ function noData(){
   if(lastData.error) return `<div class="empty-hint">${escapeHtml(lastData.error)}</div>`;
   if(!panels().length){
     return lastData.remote_pending
-      ? '<div class="empty-hint">正在采集宝塔面板 / Nightcord-Status 的数据…</div>'
+      ? '<div class="empty-hint">正在采集 Nightcord-Status 的数据…</div>'
       : '<div class="empty-hint">还没有机器上报。去设置里部署青源 agent 吧。</div>';
   }
   return '';
 }
 
-// Remote sources (BT, Nightcord-Status) are fetched in the background; say so when their part is
+// Nightcord-Status in pull mode is fetched in the background; say so when their part is
 // still loading or older than three refresh periods (by eye), since the agent data is always fresh.
 const REMOTE_STALE_S = 30;
 function remoteNote(){
   if(!lastData || lastData.error) return '';
-  if(lastData.remote_pending) return '宝塔数据采集中';
+  if(lastData.remote_pending) return '2702 数据采集中';
   if(lastData.remote_ts && (Date.now()/1000 - lastData.remote_ts) > REMOTE_STALE_S){
-    return `宝塔数据 ${fmtAgo(lastData.remote_ts)}`;
+    return `2702 数据 ${fmtAgo(lastData.remote_ts)}`;
   }
   return '';
 }
@@ -684,11 +632,7 @@ function stateText(p){
     return p.online === false ? '无法连接' : (down ? `${down} 个目标故障` : `${(p.targets || []).length} 个目标`);
   }
   const q = p.qingyuan;
-  if(p.kind === 'qingyuan-only') return q && q.online === false ? `离线 · ${fmtAgo(q.seen_at)}` : '';
-  const flags = [];
-  if(p.online === false) flags.push('宝塔连接失败');
-  if(q && q.online === false) flags.push(`青源离线 · ${fmtAgo(q.seen_at)}`);
-  return flags.join(' · ');
+  return q && q.online === false ? `离线 · ${fmtAgo(q.seen_at)}` : '';
 }
 
 function machinesView(){
@@ -699,7 +643,7 @@ function machinesView(){
     <span class="num">CPU</span><span class="num">内存</span><span class="num">磁盘</span><span class="num">Swap</span><span class="num">负载</span><span class="num">最后上报</span></div>`;
   return `<div class="machine-list">${head}${panels().map(p => {
     const state = stateOf(p);
-    const name = escapeHtml(p.name || '未命名面板');
+    const name = escapeHtml(p.name || '未命名');
     const href = `#m=${encodeURIComponent(p.name || '')}`;
     if(p.kind === 'nightcord-status'){
       const text = escapeHtml(stateText(p));
@@ -842,7 +786,7 @@ function loadAppearance(){
 
 function tile(p){
   const href = `#m=${encodeURIComponent(p.name || '')}`;
-  const name = escapeHtml(p.name || '未命名面板');
+  const name = escapeHtml(p.name || '未命名');
   const down = p.kind === 'nightcord-status' ? p.online === false
                                              : isOffline(p) || noMetrics(p);
   const state = stateOf(p);
@@ -886,19 +830,6 @@ function metric(label, value, level, barValue){
     <div class="metric-value ${level}">${escapeHtml(value)}</div>${bar}</div>`;
 }
 
-function renderSites(sites){
-  const list = (sites && sites.data) || (Array.isArray(sites) ? sites : null);
-  if(!list) return '';
-  return `<div class="group"><div class="group-header">网站（${list.length}）</div>` + list.slice(0, 8).map(s => {
-    const name = s.name || s.domain || '-';
-    const ok = s.status === '1' || s.status === 1 || s.status === true;
-    const edate = s.edate || s.expire || '';
-    return `<div class="list-item"><span>${escapeHtml(name)}</span>
-      <span><span class="${ok ? 'caption' : 'warn'}">${ok ? '运行中' : escapeHtml(s.status ?? '未知')}</span>
-      ${edate ? `<span class="caption" style="margin-left:12px">到期 ${escapeHtml(edate)}</span>` : ''}</span></div>`;
-  }).join('') + '</div>';
-}
-
 function overviewItem(p){
   const th = thresholds(), m = machineMetrics(p), q = p.qingyuan;
   let html = '';
@@ -907,35 +838,24 @@ function overviewItem(p){
   html += metric('状态', isOffline(p) ? '离线' : '在线', isOffline(p) ? 'warn' : '');
   if(q && q.seen_at) html += metric('最后上报', new Date(q.seen_at*1000).toLocaleString(), '');
   html += metric('CPU', fmtPct(m.cpu), levelOf(m.cpu, th.cpu), m.cpu);
-  html += metric('内存', m.memText ? `${fmtPct(m.mem)}（${m.memText}）` : fmtPct(m.mem), levelOf(m.mem, th.mem), m.mem);
-  const sys = p.system, net = p.network;
-  if(sys && sys.system) html += metric('系统', sys.system, '');
-  if(sys && sys.time) html += metric('运行时长', sys.time, '');
-  if(net && net.load) html += metric('负载 (1/5/15)', `${net.load.one} / ${net.load.five} / ${net.load.fifteen}`, '');
-  if(net && (net.up !== undefined || net.down !== undefined)){
-    html += metric('网络 ↑ / ↓', `${fmtBytes(net.up*1024)}/s ↑  ${fmtBytes(net.down*1024)}/s ↓`, '');
-  }
+  html += metric('内存', fmtPct(m.mem), levelOf(m.mem, th.mem), m.mem);
   html += '</div></div>';
   html += agentSystemGroup(p);
-  const ext = (q && q.ip_external) || p.ip_external;
+  const ext = q && q.ip_external;
   const int_ = q && q.ip_internal;
-  if(ext || int_ || p.url){
+  if(ext || int_){
     html += '<div class="group"><div class="group-header">网络</div><div class="fields">';
     if(ext) html += metric('外网 IP', ext, '');
     if(int_) html += metric('内网 IP', int_, '');
-    if(p.url) html += `<div class="metric"><div class="metric-label">面板地址</div><div>${escapeHtml(p.url || '')}</div></div>`;
     html += '</div></div>';
   }
-  html += renderSites(p.sites);
-  const dbs = p.databases && (p.databases.data || (Array.isArray(p.databases) ? p.databases : null));
-  if(dbs) html += `<div class="group">${metric('数据库', String(dbs.length), '')}</div>`;
   return html + rawData(p);
 }
 
 // Swap, load, processes, connections and uptime from a Qingyuan agent. Old agents and the ESXi
 // reporter send none of these: every field reads "-" and the group is left out entirely.
 function agentSystemGroup(p){
-  const q = liveQingyuan(p);
+  const q = p.qingyuan;
   if(!q) return '';
   const fields = [q.swap, q.swap_total, q.load1, q.procs, q.tcp_established, q.boot_time];
   if(fields.every(v => v === undefined || v === null)) return '';

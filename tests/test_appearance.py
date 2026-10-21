@@ -70,7 +70,7 @@ class AppearanceApiTests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.path = os.path.join(self.dir.name, "config.yaml")
         with open(self.path, "w", encoding="utf-8") as f:
-            yaml.safe_dump({"panels": [], "metrics_agent": {"enabled": True}}, f)
+            yaml.safe_dump({"metrics_agent": {"enabled": True}}, f)
         self.old_path = app.CONFIG_PATH
         app.CONFIG_PATH = self.path
         self.client = app.app.test_client()
@@ -111,7 +111,7 @@ class AppearanceApiTests(unittest.TestCase):
     def test_forward_page_opens_without_signing_in(self):
         # With login on, the forward still has to run so the #s=... survives into the login page.
         with open(self.path, "w", encoding="utf-8") as f:
-            yaml.safe_dump({"panels": [], "dashboard_auth": {"enabled": True, "password_hash": "x"}}, f)
+            yaml.safe_dump({"dashboard_auth": {"enabled": True, "password_hash": "x"}}, f)
         self.assertEqual(self.client.get("/settings").status_code, 200)
         self.assertEqual(self.client.get("/api/appearance").status_code, 401)
         self.assertEqual(self.client.get("/").status_code, 302)
@@ -185,7 +185,7 @@ class AppearanceApiTests(unittest.TestCase):
                   "} console.log(JSON.stringify(out));")
         result = subprocess.run(["node", "-e", runner], input=script, capture_output=True, text=True, timeout=30, check=True)
         self.assertEqual(json.loads(result.stdout), {
-            "": "/#p=5", "#s=notify": "/#s=notify", "#s=appearance": "/#s=theme", "#s=panels": "/#s=panels",
+            "": "/#p=5", "#s=notify": "/#s=notify", "#s=appearance": "/#s=theme", "#s=panels": "/#p=5",
             "#s=constructor": "/#p=5", "#s=bogus": "/#p=5", "#x": "/#p=5",
         })
 

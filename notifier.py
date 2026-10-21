@@ -98,7 +98,7 @@ class Notifier:
     def active_keys_for(self, panel: str):
         """
         某台青源机器名下未解决的告警 key。按告警牵涉的青源机器（panels）认，不看显示名：
-        同名的宝塔面板告警（绑定部署时名字本来就一样）不算，合并告警也不算。
+        同名的 Nightcord-Status 告警不算，合并告警也不算。
         """
         with self._lock:
             return [k for k, a in self._active.items() if panel in (a.get("panels") or []) and not a.get("merged")]
@@ -108,15 +108,15 @@ class Notifier:
     def _current_generations(self, alert: dict):
         panels = alert.get("panels")
         if panels is None or self._watch_generations is None:
-            return {}  # 宝塔面板等非青源告警不受监控名单约束
+            return {}  # Nightcord-Status 等非青源告警不受监控名单约束
         return self._watch_generations(panels)
 
     def notify(self, alert: dict):
         """
         alert 形如:
         {
-          "key": alert_key("bt", "面板A", "cpu"),  # 用于冷却去重
-          "server": "面板A",
+          "key": alert_key("qingyuan", "机器A", "cpu"),  # 用于冷却去重
+          "server": "机器A",
           "alert_type": "CPU高占用告警",
           "content": "最近5分钟内机器CPU平均占用率为89.28%，高于告警值60%",
           "ip_external": "18.130.178.188" 或 None,
@@ -258,89 +258,55 @@ def format_duration(seconds: float) -> str:
     return f"{hours} 小时 {minutes} 分钟" if minutes else f"{hours} 小时"
 
 
-def evaluate_alerts(panel_result: dict, thresholds: dict):
+def evaluate_status_alerts(card: dict):
     """
-    根据一台面板（宝塔面板 / Nightcord-Status）的采集结果 + 阈值配置，产出告警列表。
-    thresholds 形如 {"cpu": 90, "mem": 90, "disk": 85}
+    根据 Nightcord-Status（2702）卡片产出告警列表：2702 本身连不上 / 不推了，或者它判定为故障的目标。
     每条告警是一个 dict，字段见 Notifier.notify() 的文档字符串。
     """
     alerts = []
-    name = panel_result.get("name", "未知面板")
-    ip_external = panel_result.get("ip_external")
-    ip_internal = panel_result.get("ip_internal")
+    name = card.get("name", "Nightcord-Status")
 
     def make(suffix, alert_type, content):
         return {
-            "key": alert_key("bt", name, suffix),
+            "key": alert_key("status", name, suffix),
             "server": name,
             "alert_type": alert_type,
             "content": content,
-            "ip_external": ip_external,
-            "ip_internal": ip_internal,
+            "ip_external": None,
+            "ip_internal": None,
         }
 
-    if panel_result.get("online") is False:
-        if panel_result.get("kind") == "nightcord-status" and not panel_result.get("url"):
+    if card.get("online") is False:
+        if not card.get("url"):
             # 推送模式：没有地址可连，是 2702 那边不推了。从没收到过推送（刚切到推送模式、
             # 2702 还没接上）只在卡片上显示，不当失联告警
-            if panel_result.get("seen_at") is not None:
-                alerts.append(make("offline", "2702 失联告警", f"【{name}】{panel_result.get('error')}"))
+            if card.get("seen_at") is not None:
+                alerts.append(make("offline", "2702 失联告警", f"【{name}】{card.get('error')}"))
         else:
             alerts.append(make(
                 "offline",
                 "面板离线告警",
-                f"面板【{name}】({panel_result.get('url')}) 连接失败：{panel_result.get('error')}",
-            ))
-        return alerts  # 离线时其它指标无意义，直接返回
-
-    if panel_result.get("kind") == "nightcord-status":
-        # 2702 判定为故障的目标逐个告警。qingyuan 目标的离线由 plan_agent_alerts 报，
-        # panopticon 目标是 2702 在看 Panopticon 自己，这两类这里都不重复报
-        for target in panel_result.get("targets") or []:
-            if target.get("status") != "down" or target.get("type") in ("qingyuan", "panopticon"):
-                continue
-            label = target.get("display_name") or target.get("id")
-            alerts.append(make(
-                f"target-{target.get('id')}",  # 前缀见 nightcord_target_key_prefix
-                "2702 检测故障告警",
-                f"【{label}】故障：{target.get('last_error') or '检测失败'}",
+                f"面板【{name}】({card.get('url')}) 连接失败：{card.get('error')}",
             ))
         return alerts
 
-    sys = panel_result.get("system") or {}
-    net = panel_result.get("network") or {}
-    cpu = sys.get("cpuRealUsed")
-    if cpu is None and net.get("cpu"):
-        cpu = net["cpu"][0]
-    if cpu is not None and cpu >= thresholds.get("cpu", 90):
-        alerts.append(make("cpu", "CPU高占用告警", f"最近一次采样机器CPU占用率为{cpu}%，高于告警值{thresholds.get('cpu',90)}%"))
-
-    mem_used, mem_total = sys.get("MemRealUsed"), sys.get("MemTotal")
-    if mem_used and mem_total:
-        mem_pct = mem_used / mem_total * 100
-        if mem_pct >= thresholds.get("mem", 90):
-            alerts.append(make("mem", "内存高占用告警", f"最近一次采样机器内存占用率为{mem_pct:.2f}%，高于告警值{thresholds.get('mem',90)}%"))
-
-    for d in (panel_result.get("disk") or []):
-        size = d.get("size") or []
-        if len(size) >= 4:
-            try:
-                disk_pct = int(str(size[3]).replace("%", ""))
-            except ValueError:
-                continue
-            if disk_pct >= thresholds.get("disk", 85):
-                path = d.get("path")
-                alerts.append(make(
-                    f"disk-{path}",
-                    "磁盘余量告警",
-                    f"挂载目录【{path}】的磁盘已使用容量为{disk_pct}%，大于告警值{thresholds.get('disk',85)}%",
-                ))
+    # qingyuan 目标的离线由 plan_agent_alerts 报，panopticon 目标是 2702 在看 Panopticon 自己，
+    # 这两类这里都不重复报
+    for target in card.get("targets") or []:
+        if target.get("status") != "down" or target.get("type") in ("qingyuan", "panopticon"):
+            continue
+        label = target.get("display_name") or target.get("id")
+        alerts.append(make(
+            f"target-{target.get('id')}",  # 前缀见 nightcord_target_key_prefix
+            "2702 检测故障告警",
+            f"【{label}】故障：{target.get('last_error') or '检测失败'}",
+        ))
     return alerts
 
 
 def nightcord_target_key_prefix(name: str) -> str:
-    """evaluate_alerts 给 Nightcord-Status 单个目标出的告警 key 的公共前缀。"""
-    return alert_key("bt", name, "target-")
+    """evaluate_status_alerts 给 Nightcord-Status 单个目标出的告警 key 的公共前缀。"""
+    return alert_key("status", name, "target-")
 
 
 def evaluate_agent_alerts(panel_name: str, sample: dict, thresholds: dict,
