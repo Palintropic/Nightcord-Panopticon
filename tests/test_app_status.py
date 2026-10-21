@@ -12,6 +12,7 @@ metrics_store.DB_PATH = os.path.join(_TMP.name, "metrics.db")
 import yaml  # noqa: E402
 
 import app  # noqa: E402
+from auth import ForwardedProto  # noqa: E402
 
 
 class AppTestCase(unittest.TestCase):
@@ -151,11 +152,22 @@ class ProxyLoginTests(AppTestCase):
         with open(app.CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write("dashboard_auth: [unclosed\n")
         self.assertEqual(app._current_trusted_proxies(), {"127.0.0.1", "::1"})
+        seen = {}
+
+        def inner(environ, start_response):
+            seen["scheme"] = environ["wsgi.url_scheme"]
+            return [b""]
+
+        # Same wiring as app.wsgi_app: the wrapper must pass the request on, with 10.10.0.3 untrusted.
+        environ = {"REMOTE_ADDR": "10.10.0.3", "wsgi.url_scheme": "http", "HTTP_X_FORWARDED_PROTO": "https"}
+        ForwardedProto(inner, app._current_trusted_proxies)(environ, lambda *a: None)
+        self.assertEqual(seen["scheme"], "http")
+        self.assertIsInstance(app.app.wsgi_app, ForwardedProto)
 
     def test_saving_settings_keeps_an_empty_trusted_proxies(self):
         from config_editor import merge_submitted
         merged, _ = merge_submitted({"dashboard_auth": {"trusted_proxies": []}}, {"dashboard_auth": {}})
-        self.assertIn("trusted_proxies", merged["dashboard_auth"])
+        self.assertEqual(merged["dashboard_auth"]["trusted_proxies"], [])
 
     def test_saving_settings_keeps_trusted_proxies(self):
         from config_editor import merge_submitted
