@@ -110,9 +110,11 @@ app.secret_key = ensure_session_secret()
 
 
 def _current_trusted_proxies():
+    # 跑在所有路由前面（包括 agent 上报这些机器接口）：配置缺失或 YAML 写坏了都只退回"只信本机"，
+    # 不能让它把每个请求都变成 500
     try:
         return trusted_proxies_from(load_config())
-    except RuntimeError:
+    except Exception:
         return trusted_proxies_from({})
 
 

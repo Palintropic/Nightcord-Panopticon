@@ -146,6 +146,17 @@ class ProxyLoginTests(AppTestCase):
                                headers={"X-Forwarded-For": "192.0.2.200"})
         self.assertEqual(res.status_code, 429)
 
+    def test_broken_config_falls_back_to_loopback_in_the_middleware(self):
+        # The middleware runs before every route; a YAML error there must not turn into a 500 by itself.
+        with open(app.CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write("dashboard_auth: [unclosed\n")
+        self.assertEqual(app._current_trusted_proxies(), {"127.0.0.1", "::1"})
+
+    def test_saving_settings_keeps_an_empty_trusted_proxies(self):
+        from config_editor import merge_submitted
+        merged, _ = merge_submitted({"dashboard_auth": {"trusted_proxies": []}}, {"dashboard_auth": {}})
+        self.assertIn("trusted_proxies", merged["dashboard_auth"])
+
     def test_saving_settings_keeps_trusted_proxies(self):
         from config_editor import merge_submitted
         merged, errors = merge_submitted(app.load_config(), {"dashboard_auth": {"enabled": True}})
