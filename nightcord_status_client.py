@@ -1,7 +1,6 @@
 """
 Nightcord-Status（自建监控服务，xml_status_service.py，端口 8702）的只读客户端。
-跟 bt_client.py 平级，但数据形状完全不同——一次探测覆盖若干个异构监控目标
-（ESXi 主机 / TCP 探测 / 第三方 statuspage 等），所以不复用 BTClient。
+一次探测覆盖若干个异构监控目标（ESXi 主机 / TCP 探测 / 第三方 statuspage 等）。
 接口只监听 WireGuard 内网、目前无鉴权，纯 GET。
 """
 import requests

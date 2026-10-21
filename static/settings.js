@@ -335,26 +335,6 @@ document.getElementById('kaomojiReset').addEventListener('click', async () => {
   if(await saveKaomoji({faces:{}})) renderKaomoji(true);
 });
 
-// ---------- 宝塔面板 ----------
-function panelRowHtml(p){
-  p = p || {name:'', url:'', api_key:'', verify_ssl:false};
-  const keyPlaceholder = p.api_key === SECRET_PLACEHOLDER ? '已设置，留空则不修改' : '面板设置-API接口 里的密钥';
-  return `<div class="panel-card">
-    <div class="card-head"><span class="caption">宝塔面板</span>
-      <button class="command btn-danger" onclick="this.closest('.panel-card').remove()">删除</button></div>
-    <div class="form-grid">
-      <label class="field">名称<input type="text" class="p-name" value="${escapeAttr(p.name)}" placeholder="例如：上海-Web01"></label>
-      <label class="field">地址（含端口）<input type="text" class="p-url" value="${escapeAttr(p.url)}" placeholder="http://10.10.0.2:18101"></label>
-      <label class="field">API 密钥<input type="password" class="p-key" placeholder="${keyPlaceholder}"></label>
-    </div>
-    <label class="check"><input type="checkbox" class="p-ssl" ${p.verify_ssl?'checked':''}> 校验 SSL 证书（自签证书不要勾）</label>
-  </div>`;
-}
-
-function addPanelRow(p){
-  document.getElementById('panels').insertAdjacentHTML('beforeend', panelRowHtml(p));
-}
-
 // ---------- Passkey ----------
 function base64urlToBuffer(base64url){
   const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
@@ -455,9 +435,6 @@ async function load(){
   if(!res.ok){ setSaveMsg('err', `读取配置失败（HTTP ${res.status}），刷新页面再试`); return; }
   const cfg = await res.json();
 
-  document.getElementById('panels').innerHTML = '';
-  (cfg.panels || []).forEach(p => addPanelRow(p));
-
   const da = cfg.dashboard_auth || {};
   document.getElementById('authEnabled').checked = !!da.enabled;
   document.getElementById('authUsername').value = da.username || '';
@@ -487,15 +464,12 @@ async function load(){
   document.getElementById('emailTo').value = (em.to||[]).join(', ');
   document.getElementById('emailHint').textContent = em.password === SECRET_PLACEHOLDER ? '已设置授权码（留空保持不变）' : '还没设置';
 
-  const bindSelect = document.getElementById('deployBindPanel');
-  bindSelect.innerHTML = '<option value="">不绑定（用远端 hostname 当名字）</option>' +
-    (cfg.panels || []).map(p => `<option value="${escapeAttr(p.name)}">${escapeAttr(p.name)}</option>`).join('');
   setSaveEnabled(true);
 
-  // First run = nothing configured yet: no password and no data source (no BT panel, no agent has
-  // ever reported, Nightcord-Status off). Checked after the form is filled, so it never holds up saving.
+  // First run = nothing configured yet: no password and no data source (no agent has ever
+  // reported, Nightcord-Status off). Checked after the form is filled, so it never holds up saving.
   let firstRun = false;
-  if(!da.has_password && !(cfg.panels || []).length && !cfg.nightcord_status_enabled){
+  if(!da.has_password && !cfg.nightcord_status_enabled){
     const agents = await fetch('/api/agents').then(r => r.ok ? r.json() : {agents: []}).catch(() => ({agents: []}));
     firstRun = !(agents.agents || []).length;
   }
@@ -503,17 +477,6 @@ async function load(){
     settings.firstRun = firstRun;
     if(typeof settingsChanged === 'function') settingsChanged();
   }
-}
-
-function collectPanels(){
-  // 只收集面板列表里的卡片；passkey 列表也用 .panel-card 样式，它没有 .p-name 这些输入框，
-  // 一起收集会抛错，保存按钮就永远停在"保存中"
-  return Array.from(document.querySelectorAll('#panels .panel-card')).map(card => ({
-    name: card.querySelector('.p-name').value.trim(),
-    url: card.querySelector('.p-url').value.trim(),
-    api_key: card.querySelector('.p-key').value.trim(),
-    verify_ssl: card.querySelector('.p-ssl').checked,
-  })).filter(p => p.name || p.url);
 }
 
 function setSaveMsg(cls, text){
@@ -527,7 +490,6 @@ async function save(){
   try{
     // 保存是整份配置一起提交：各页的输入框都在页面里（只是不显示），哪一页点保存都一样
     const payload = {
-      panels: collectPanels(),
       dashboard_auth: {
         enabled: document.getElementById('authEnabled').checked,
         username: document.getElementById('authUsername').value.trim(),
@@ -719,7 +681,6 @@ async function deployAgent(){
   const ssh_user = document.getElementById('deployUser').value.trim() || 'root';
   const password = document.getElementById('deployPassword').value;
   const remember = document.getElementById('deployRemember').checked;
-  const bind_panel = document.getElementById('deployBindPanel').value;
   if(!ip || !password){
     msg.className = 'err';
     msg.textContent = '服务器 IP 和密码不能为空';
@@ -728,7 +689,7 @@ async function deployAgent(){
   await streamDeploy('/api/agent/deploy', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ip, port, ssh_user, password, remember, bind_panel}),
+    body: JSON.stringify({ip, port, ssh_user, password, remember}),
   }, msg, log, async () => {
     document.getElementById('deployPassword').value = '';
     await loadAgentHosts();

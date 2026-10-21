@@ -51,7 +51,7 @@ const summary = () => document.getElementById('statusSummary').textContent;
 
 (async () => {
   const now = Date.now() / 1000;
-  const status = ts => ({ts, panels: [{name: 'qy', kind: 'qingyuan-only', online: true,
+  const status = ts => ({ts, panels: [{name: 'qy', kind: 'qingyuan', online: true,
     qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: ts}}], thresholds: {cpu: 90, mem: 90, disk: 85}});
   const out = {};
 
@@ -74,9 +74,9 @@ const summary = () => document.getElementById('statusSummary').textContent;
   const rich = {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now, swap: 12.5, swap_total: 2147483648,
     load1: 0.42, load5: 0.3, load15: 0.25, cores: 4, procs: 187, tcp_established: 23, boot_time: now - 90000};
   responses.push({data: {ts: now, thresholds: {cpu: 90, mem: 90, disk: 85}, panels: [
-    {name: 'new', kind: 'qingyuan-only', online: true, qingyuan: rich},
-    {name: 'noswap', kind: 'qingyuan-only', online: true, qingyuan: {...rich, swap: null, swap_total: 0}},
-    {name: 'old', kind: 'qingyuan-only', online: true, qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now}},
+    {name: 'new', kind: 'qingyuan', online: true, qingyuan: rich},
+    {name: 'noswap', kind: 'qingyuan', online: true, qingyuan: {...rich, swap: null, swap_total: 0}},
+    {name: 'old', kind: 'qingyuan', online: true, qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: now}},
   ]}});
   await api.refresh(false); await tick();
   out.machines = api.machinesView();

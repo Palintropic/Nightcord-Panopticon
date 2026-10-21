@@ -36,46 +36,81 @@ class AppTestCase(unittest.TestCase):
             yaml.safe_dump(cfg, f, allow_unicode=True)
 
 
+PULL = {"nightcord_status": {"enabled": True, "source": "pull", "url": "http://x"}}
+PULL_OTHER = {"nightcord_status": {"enabled": True, "source": "pull", "url": "http://y"}}
+OFF = {"nightcord_status": {"enabled": False}}
+
+
 class RemoteCacheTests(AppTestCase):
     def test_cache_from_an_older_config_is_ignored_even_if_another_process_changed_it(self):
-        self.write_config({"panels": [{"name": "bt-old", "url": "http://x", "api_key": "k"}]})
+        self.write_config(PULL)
         ticket = app._begin_remote_fetch()
-        app._store_remote([{"name": "bt-old", "url": "http://x", "online": True}], ticket)
+        app._store_remote([{"name": "ns-old", "url": "http://x", "online": True, "kind": "nightcord-status"}], ticket)
         # Another worker saves the config; this process never hears about it.
-        self.write_config({"panels": []})
+        self.write_config(OFF)
         app._refresh_remote_async = lambda: None
         body = self.client.get("/api/status").get_json()
         self.assertEqual([p["name"] for p in body["panels"]], [])
         self.assertFalse(body["remote_pending"])
 
     def test_fetch_uses_one_config_snapshot_for_fingerprint_and_sources(self):
-        # ena: config A → B (panel added) → back to A while a fetch runs. The result fetched under B
+        # ena: config A → B (source added) → back to A while a fetch runs. The result fetched under B
         # must not land with A's fingerprint.
-        self.write_config({"panels": []})
+        self.write_config(OFF)
         ticket = app._begin_remote_fetch()
-        self.write_config({"panels": [{"name": "bt-temp", "url": "http://x", "api_key": "k"}]})
+        self.write_config(PULL)
         result = app.fetch_remote(ticket["cfg"])
-        self.write_config({"panels": []})
+        self.write_config(OFF)
         app._store_remote(result, ticket)
         app._refresh_remote_async = lambda: None
         body = self.client.get("/api/status").get_json()
         self.assertEqual([p["name"] for p in body["panels"]], [])
 
     def test_an_earlier_fetch_cannot_overwrite_a_later_one(self):
-        self.write_config({"panels": [{"name": "bt", "url": "http://x", "api_key": "k"}]})
+        self.write_config(PULL)
         first = app._begin_remote_fetch()
         second = app._begin_remote_fetch()
-        app._store_remote([{"name": "bt", "online": True}], second)
-        app._store_remote([{"name": "bt", "online": False}], first)
+        app._store_remote([{"name": "ns", "online": True}], second)
+        app._store_remote([{"name": "ns", "online": False}], first)
         self.assertTrue(app._remote["data"][0]["online"])
 
     def test_status_answers_without_waiting_for_remote_sources(self):
-        self.write_config({"panels": [{"name": "bt", "url": "http://x", "api_key": "k"}]})
+        self.write_config(PULL)
         started = []
         app._refresh_remote_async = lambda: started.append(True)
         body = self.client.get("/api/status").get_json()
         self.assertTrue(body["remote_pending"])
         self.assertEqual(started, [True])
+
+    def test_changing_the_status_url_invalidates_the_cache(self):
+        self.write_config(PULL)
+        ticket = app._begin_remote_fetch()
+        app._store_remote([{"name": "ns", "url": "http://x", "online": True, "kind": "nightcord-status"}], ticket)
+        self.write_config(PULL_OTHER)
+        app._refresh_remote_async = lambda: None
+        self.assertTrue(self.client.get("/api/status").get_json()["remote_pending"])
+
+
+class LeftoverPanelsTests(AppTestCase):
+    """Old configs still carry a `panels:` list of BT panels; it is ignored, and dropped on save."""
+
+    OLD = {"panels": [{"name": "上海", "url": "http://10.10.0.1:18101", "api_key": "k"}]}
+
+    def test_old_panels_produce_no_cards_and_no_fetch(self):
+        self.write_config(self.OLD)
+        started = []
+        app._refresh_remote_async = lambda: started.append(True)
+        body = self.client.get("/api/status").get_json()
+        self.assertEqual(body["panels"], [])
+        self.assertFalse(body["remote_pending"])
+        self.assertEqual(app.fetch_remote(app.load_config()), [])
+
+    def test_saving_settings_drops_old_panels(self):
+        from config_editor import merge_submitted, redact_for_display
+        self.assertNotIn("panels", redact_for_display(self.OLD))
+        merged, errors = merge_submitted(self.OLD, {"panels": [{"name": "x", "url": "http://x"}]})
+        self.assertEqual(errors, [])
+        self.assertNotIn("panels", merged)
 
 
 class DeployTests(AppTestCase):

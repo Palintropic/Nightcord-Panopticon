@@ -2,9 +2,9 @@
 设置页 / 首次运行向导（OOBE）用的 config.yaml 读写逻辑。
 
 设计原则：
-- 敏感字段（面板 api_key、飞书 webhook、邮箱密码、登录密码）从不回显明文给前端，
+- 敏感字段（飞书 webhook、邮箱密码、登录密码）从不回显明文给前端，
   GET 接口只返回"是否已设置"，前端表单里对应输入框留空提交 = 不修改。
-- 只有真正填了新值才会覆盖旧值；新增的面板/开启的通知渠道必须把必填项填完整，
+- 只有真正填了新值才会覆盖旧值；开启的通知渠道必须把必填项填完整，
   否则整个保存请求失败并返回具体报错，不会把配置存成半残状态。
 """
 from werkzeug.security import generate_password_hash
@@ -14,15 +14,6 @@ SECRET_PLACEHOLDER = "••••••••"
 
 def redact_for_display(cfg: dict) -> dict:
     cfg = cfg or {}
-    panels_out = []
-    for p in cfg.get("panels", []) or []:
-        panels_out.append({
-            "name": p.get("name", ""),
-            "url": p.get("url", ""),
-            "api_key": SECRET_PLACEHOLDER if p.get("api_key") else "",
-            "verify_ssl": bool(p.get("verify_ssl", False)),
-        })
-
     da = cfg.get("dashboard_auth", {}) or {}
     dashboard_auth = {
         "enabled": bool(da.get("enabled", False)),
@@ -60,7 +51,6 @@ def redact_for_display(cfg: dict) -> dict:
     }
 
     return {
-        "panels": panels_out,
         "dashboard_auth": dashboard_auth,
         "notifications": notifications,
         # 只读：设置页判断"是不是首次配置"用，这一段配置没有设置页 UI
@@ -77,30 +67,6 @@ def merge_submitted(old_cfg: dict, submitted: dict):
     old_cfg = old_cfg or {}
     submitted = submitted or {}
     errors = []
-    old_panels_by_name = {p.get("name"): p for p in (old_cfg.get("panels", []) or [])}
-
-    merged_panels = []
-    for p in submitted.get("panels", []) or []:
-        name = _clean_str(p.get("name"))
-        url = _clean_str(p.get("url"))
-        api_key = _clean_str(p.get("api_key"))
-        if not name or not url:
-            errors.append(f"有一个面板缺少名称或地址（{name or url or '未命名'}）")
-            continue
-        if api_key in ("", SECRET_PLACEHOLDER):
-            old = old_panels_by_name.get(name)
-            if old and old.get("api_key"):
-                api_key = old["api_key"]
-            else:
-                errors.append(f"面板【{name}】还没有填写 API 密钥")
-                continue
-        merged_panels.append({
-            "name": name,
-            "url": url,
-            "api_key": api_key,
-            "verify_ssl": bool(p.get("verify_ssl", False)),
-        })
-
     da_in = submitted.get("dashboard_auth", {}) or {}
     old_da = old_cfg.get("dashboard_auth", {}) or {}
     merged_da = {
@@ -176,7 +142,9 @@ def merge_submitted(old_cfg: dict, submitted: dict):
     # 这样 nightcord_status / metrics_agent 这些没有设置页 UI 的顶层配置段
     # 不会在保存 /settings 表单时被静默抹掉。
     merged = dict(old_cfg)
-    merged.update({"panels": merged_panels, "dashboard_auth": merged_da, "notifications": merged_notif})
+    # 宝塔面板数据源已经去掉了，旧配置里留下的 panels（带着面板 API 密钥）保存时顺手清掉
+    merged.pop("panels", None)
+    merged.update({"dashboard_auth": merged_da, "notifications": merged_notif})
     return merged, errors
 
 

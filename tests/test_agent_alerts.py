@@ -1,6 +1,6 @@
 import unittest
 
-from notifier import ALL_OFFLINE_KEY, ALL_OFFLINE_SERVER, Notifier, alert_key, evaluate_alerts, plan_agent_alerts
+from notifier import ALL_OFFLINE_KEY, ALL_OFFLINE_SERVER, Notifier, alert_key, evaluate_status_alerts, plan_agent_alerts
 
 NOW = 10_000
 STALE = 180
@@ -117,7 +117,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(n.sent, [])
         self.assertFalse(n.is_active("tokyo-agent-offline"))
 
-    def test_bt_alerts_without_panels_ignore_watch_list(self):
+    def test_status_alerts_without_panels_ignore_watch_list(self):
         n = RecordingNotifier(watched={})
         n.notify({"key": "上海-offline", "server": "上海", "alert_type": "面板离线告警", "content": "x"})
         n.resolve(set())
@@ -149,29 +149,29 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(n.sent, [("全部机器同时失联", "red"), ("全部机器同时失联", "red")])
         self.assertEqual(n._active[ALL_OFFLINE_KEY]["panels"], ["b", "c"])
 
-    def test_bt_panel_name_cannot_collide_with_merged_key(self):
+    def test_status_card_name_cannot_collide_with_merged_key(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0})
-        bt = {"name": "qingyuan-all", "online": False, "url": "http://x", "error": "down"}
+        card = {"name": "qingyuan-all", "online": False, "url": "http://x", "error": "down", "kind": "nightcord-status"}
         for _ in range(2):
-            bt_alerts = evaluate_alerts(bt, {})
+            status_alerts = evaluate_status_alerts(card)
             alerts, keep = plan_agent_alerts([state("a", 600), state("b", 600)], {}, NOW, STALE, n.active_keys_for)
-            for a in bt_alerts + alerts:
+            for a in status_alerts + alerts:
                 n.notify(a)
-            n.resolve({a["key"] for a in bt_alerts + alerts} | keep)
+            n.resolve({a["key"] for a in status_alerts + alerts} | keep)
         self.assertEqual(n.sent, [("面板离线告警", "red"), ("全部机器同时失联", "red")])
-        n.resolve({ALL_OFFLINE_KEY})            # 宝塔面板恢复了
+        n.resolve({ALL_OFFLINE_KEY})            # 2702 恢复了
         self.assertEqual(n.sent[-1], ("面板离线告警已恢复", "green"))
 
-    def test_same_named_bt_panel_recovers_while_agent_is_offline(self):
+    def test_same_named_status_card_recovers_while_agent_is_offline(self):
         n = RecordingNotifier(watched={"a": 0, "b": 0})
-        bt_down = {"name": "a", "online": False, "url": "http://x", "error": "down"}
-        bt_up = {"name": "a", "online": True}
-        for bt in (bt_down, bt_up):
-            bt_alerts = evaluate_alerts(bt, {})
+        ns_down = {"name": "a", "online": False, "url": "http://x", "error": "down", "kind": "nightcord-status"}
+        ns_up = {"name": "a", "online": True, "kind": "nightcord-status", "targets": []}
+        for card in (ns_down, ns_up):
+            status_alerts = evaluate_status_alerts(card)
             alerts, keep = plan_agent_alerts([state("a", 600), state("b", 10)], {}, NOW, STALE, n.active_keys_for)
-            for a in bt_alerts + alerts:
+            for a in status_alerts + alerts:
                 n.notify(a)
-            n.resolve({a["key"] for a in bt_alerts + alerts} | keep)
+            n.resolve({a["key"] for a in status_alerts + alerts} | keep)
         self.assertEqual(n.sent, [("面板离线告警", "red"), ("机器离线告警", "red"), ("面板离线告警已恢复", "green")])
 
     def test_merged_alert_gaining_a_member_is_not_recovered(self):
@@ -256,31 +256,31 @@ class NightcordStatusAlertTests(unittest.TestCase):
         return card
 
     def test_each_down_target_alerts_once(self):
-        alerts = evaluate_alerts(self.card([
+        alerts = evaluate_status_alerts(self.card([
             {"id": "esxi-1", "display_name": "ESXi-1", "type": "esxi", "status": "down",
              "last_error": "timed out"},
             {"id": "claude", "display_name": "Claude", "type": "statuspage", "status": "degraded"},
             {"id": "freepbx-self", "display_name": "FreePBX", "type": "tcp", "status": "ok"},
-        ]), self.TH)
-        self.assertEqual([a["key"] for a in alerts], [alert_key("bt", "Nightcord-Status", "target-esxi-1")])
+        ]))
+        self.assertEqual([a["key"] for a in alerts], [alert_key("status", "Nightcord-Status", "target-esxi-1")])
         self.assertIn("timed out", alerts[0]["content"])
 
     def test_qingyuan_and_panopticon_targets_are_left_to_panopticon(self):
-        alerts = evaluate_alerts(self.card([
+        alerts = evaluate_status_alerts(self.card([
             {"id": "cloud-japan", "type": "qingyuan", "status": "down"},
             {"id": "panopticon", "type": "panopticon", "status": "down"},
-        ]), self.TH)
+        ]))
         self.assertEqual(alerts, [])
 
     def test_silent_2702_is_its_own_alert(self):
-        alerts = evaluate_alerts(self.card([], online=False, seen_at=1000,
-                                           error="2702 超过 3 分钟没有推送"), self.TH)
+        alerts = evaluate_status_alerts(self.card([], online=False, seen_at=1000,
+                                           error="2702 超过 3 分钟没有推送"))
         self.assertEqual(alerts[0]["alert_type"], "2702 失联告警")
         self.assertNotIn("None", alerts[0]["content"])
 
     def test_never_pushed_is_not_an_alert(self):
         card = self.card([], online=False, seen_at=None, error="还没收到过 2702 的推送")
-        self.assertEqual(evaluate_alerts(card, self.TH), [])
+        self.assertEqual(evaluate_status_alerts(card), [])
 
 
 if __name__ == "__main__":

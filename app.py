@@ -1,12 +1,11 @@
 """
-宝塔多面板聚合 Dashboard 后端
+Nightcord-Panopticon 后端：汇总青源 agent 上报的机器指标和 Nightcord-Status 的检测结果
 用法：
     pip install -r requirements.txt
-    cp config.example.yaml config.yaml   # 填入各面板地址与 API 密钥
+    cp config.example.yaml config.yaml
     python app.py
 然后浏览器打开 http://127.0.0.1:1810
 """
-import copy
 import hmac
 import json
 import os
@@ -14,15 +13,12 @@ import queue
 import secrets
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context, session, redirect, url_for
 from werkzeug.security import check_password_hash
 
 import webauthn_manager as wam
-from bt_client import BTClient
 from nightcord_status_client import NightcordStatusClient
-from notifier import Notifier, evaluate_alerts, format_duration, nightcord_target_key_prefix, plan_agent_alerts
+from notifier import Notifier, evaluate_status_alerts, format_duration, nightcord_target_key_prefix, plan_agent_alerts
 from auth import BruteForceGuard, get_client_ip
 from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance, kaomoji_of, clean_kaomoji
 from agent_deploy import deploy_agent, AgentDeployError
@@ -46,10 +42,10 @@ _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实�
 PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify",
                     "setup_page", "settings_page"}
 
-# 远程数据源（宝塔面板、Nightcord-Status）的采集结果缓存。远程采集可能很慢（宝塔接口串行，
-# 一台没响应就要几十秒），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
+# 远程数据源（拉取模式的 Nightcord-Status）的采集结果缓存。远程采集可能很慢（对面没响应要等到
+# 超时），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
 # （同一时间只跑一个）。ts 记的是采集完成的时间。青源数据每次请求都从数据库现读，始终最新。
-# fp：采集开始时那两段配置的指纹。读缓存时跟当前配置比，对不上就当作没有缓存——指纹来自
+# fp：采集开始时那段配置的指纹。读缓存时跟当前配置比，对不上就当作没有缓存——指纹来自
 #     配置文件本身，所以别的进程（Gunicorn 多 worker）改了配置也能认出来。
 # seq：每次采集开始领一个递增序号，只有比已入缓存的更新的采集才能写入，先开始后结束的旧采集
 #      （比如巡检和看板触发的刷新同时在跑）不会覆盖新结果。
@@ -78,13 +74,9 @@ QINGYUAN_VERSION = "7.17-beta"  # 青源（自建系统指标监控架构）版�
 def load_config():
     if not os.path.exists(CONFIG_PATH):
         raise RuntimeError(
-            f"未找到配置文件 {CONFIG_PATH}，请先复制 config.example.yaml 为 config.yaml 并填写面板信息"
+            f"未找到配置文件 {CONFIG_PATH}，请先复制 config.example.yaml 为 config.yaml"
         )
     return load_yaml(CONFIG_PATH)
-
-
-def load_panels():
-    return load_config().get("panels", [])
 
 
 def save_config(cfg):
@@ -320,7 +312,7 @@ def webauthn_login_verify():
 
 
 def fetch_all():
-    """采集远程数据源（顺便更新缓存）并叠加青源数据。后台巡检用；看板请求走 api_status 的非阻塞路径。"""
+    """采集远程数据源（顺便更新缓存）并加上青源数据。后台巡检用；看板请求走 api_status 的非阻塞路径。"""
     ticket = _begin_remote_fetch()
     remote = fetch_remote(ticket["cfg"])
     _store_remote(remote, ticket)
@@ -328,8 +320,7 @@ def fetch_all():
 
 
 def _with_qingyuan(remote):
-    results = copy.deepcopy(remote)  # _merge_qingyuan 会往卡片上挂数据，不能改到缓存本身
-    _merge_qingyuan(results)
+    results = _qingyuan_cards(time.time()) + list(remote)  # 拷一份列表，不往缓存本身上加卡片
     try:
         cfg = load_config()
     except RuntimeError:
@@ -372,13 +363,13 @@ def _nightcord_push_card(cfg, now):
 
 
 def _remote_fingerprint(cfg=None):
-    """决定远程采集结果的那两段配置（宝塔面板列表、Nightcord-Status）的指纹。"""
+    """决定远程采集结果的那段配置（Nightcord-Status）的指纹。"""
     if cfg is None:
         try:
             cfg = load_config()
         except RuntimeError:
             cfg = {}
-    return json.dumps([cfg.get("panels") or [], cfg.get("nightcord_status") or {}], sort_keys=True, ensure_ascii=False)
+    return json.dumps(cfg.get("nightcord_status") or {}, sort_keys=True, ensure_ascii=False)
 
 
 def _begin_remote_fetch():
@@ -430,39 +421,19 @@ def _refresh_remote_async():
 
 
 def fetch_remote(cfg):
-    """宝塔面板 + Nightcord-Status 的原始采集结果（不含青源数据），只按传进来的配置快照采集。"""
-    panels = cfg.get("panels") or []
-    results = []
-    with ThreadPoolExecutor(max_workers=max(1, len(panels))) as pool:
-        futures = {
-            pool.submit(
-                BTClient(p["name"], p["url"], p["api_key"], p.get("verify_ssl", False)).collect_all
-            ): p
-            for p in panels
-        }
-        for fut in as_completed(futures):
-            try:
-                results.append(fut.result())
-            except Exception as e:
-                p = futures[fut]
-                results.append({"name": p.get("name"), "url": p.get("url"), "online": False, "error": str(e)})
-    # 保持配置顺序
-    order = {p["name"]: i for i, p in enumerate(panels)}
-    results.sort(key=lambda r: order.get(r.get("name"), 999))
-
+    """拉取模式下 Nightcord-Status 的原始采集结果（不含青源数据），只按传进来的配置快照采集。"""
     ns_cfg = cfg.get("nightcord_status") or {}
-    if ns_cfg.get("enabled") and not _nightcord_push_mode(cfg):
-        try:
-            ns_result = NightcordStatusClient(
-                ns_cfg.get("name", "Nightcord-Status"),
-                ns_cfg["url"],
-                ns_cfg.get("verify_ssl", False),
-            ).collect_all()
-        except Exception as e:
-            ns_result = {"name": ns_cfg.get("name", "Nightcord-Status"), "url": ns_cfg.get("url"),
-                         "online": False, "error": str(e), "kind": "nightcord-status", "targets": []}
-        results.append(ns_result)
-    return results
+    if not ns_cfg.get("enabled") or _nightcord_push_mode(cfg):
+        return []
+    try:
+        return [NightcordStatusClient(
+            ns_cfg.get("name", "Nightcord-Status"),
+            ns_cfg["url"],
+            ns_cfg.get("verify_ssl", False),
+        ).collect_all()]
+    except Exception as e:
+        return [{"name": ns_cfg.get("name", "Nightcord-Status"), "url": ns_cfg.get("url"),
+                 "online": False, "error": str(e), "kind": "nightcord-status", "targets": []}]
 
 
 def _agent_states(now):
@@ -485,35 +456,13 @@ def _agent_states(now):
     return states
 
 
-def _merge_qingyuan(results):
+def _qingyuan_cards(now):
     """
-    把青源（自建 agent）最新上报的数据叠加进 fetch_all() 的结果里：
-    - 面板名跟某个宝塔面板对得上：把青源数据挂在同一张卡片上（同名机器装了两边），
-      前端展示时青源数据优先（本机 agent 直采，比宝塔面板 API 转发的更实时更准）。
-    - 名字对不上但 IP 对得上：兜底按 IP 合并——宝塔面板名字是手打的、青源 panel_name
-      默认取自远端 hostname，两套命名本来就没有必然关系，光靠名字很容易漏判（同一台机器
-      拆成两张卡片）。一键部署时选了"绑定到已有面板"就不会走到这个兜底分支，这里主要是
-      给部署在先的旧 agent、或者没走绑定流程的场景兜底。
-    - 名字、IP 都对不上：说明这台机器只装了青源，没有对应的宝塔面板，单独给它造一张卡片，
-      否则它在主看板上永远不可见（只能去设置页的"已部署 agent"列表里找）。
-    离线的机器也照样出卡片（灰掉、显示最后一次的数据），不会因为不上报了就从看板上消失；
-    只有在设置页"移除"之后才不再显示。
+    每台青源机器一张卡片。离线的机器也照样出卡片（灰掉、显示最后一次的数据），
+    不会因为不上报了就从看板上消失；只有在设置页"移除"之后才不再显示。
     """
-    by_name = {r.get("name"): r for r in results}
-    by_ip = {}
-    for r in results:
-        host = urlparse(r.get("url") or "").hostname
-        if host:
-            by_ip.setdefault(host, r)
-
-    now = time.time()
-    states = _agent_states(now)
-    # 名字绑定优先：先让所有同名的机器认领自己的卡片，再用 IP 给剩下的兜底。共用 NAT 出口的
-    # 机器 IP 一样，按 IP 兜底时不能覆盖已经被认领的卡片，否则一台离线机器能把在线机器的卡片标成离线。
-    states.sort(key=lambda st: st["panel"] not in by_name)
-    claimed = set()
-    for state in states:
-        panel_name = state["panel"]
+    cards = []
+    for state in _agent_states(now):
         sample = state["sample"] or {}
         offline_error = None if state["online"] else (
             f"青源 agent 超过 {AGENT_STALE_SECONDS // 60} 分钟没有上报，最后一次上报在 "
@@ -540,25 +489,15 @@ def _merge_qingyuan(results):
             "seen_at": state["seen_at"],
             "error": offline_error,
         }
-        existing = by_name.get(panel_name)
-        if existing is None:
-            for ip in (state["ip_internal"], state["ip_external"]):
-                candidate = by_ip.get(ip)
-                if candidate is not None and id(candidate) not in claimed:
-                    existing = candidate
-                    break
-        if existing is not None and id(existing) not in claimed:
-            claimed.add(id(existing))
-            existing["qingyuan"] = qingyuan
-        else:
-            results.append({
-                "name": panel_name,
-                "url": None,
-                "online": state["online"],
-                "error": offline_error,
-                "kind": "qingyuan-only",
-                "qingyuan": qingyuan,
-            })
+        cards.append({
+            "name": state["panel"],
+            "url": None,
+            "online": state["online"],
+            "error": offline_error,
+            "kind": "qingyuan",
+            "qingyuan": qingyuan,
+        })
+    return cards
 
 
 def _thresholds():
@@ -580,9 +519,7 @@ def api_status():
         cfg = load_config()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
-    has_remote = bool(cfg.get("panels")) or (
-        bool((cfg.get("nightcord_status") or {}).get("enabled")) and not _nightcord_push_mode(cfg)
-    )
+    has_remote = bool((cfg.get("nightcord_status") or {}).get("enabled")) and not _nightcord_push_mode(cfg)
     now = time.time()
     with _remote_lock:
         remote, remote_ts, remote_fp = _remote["data"], _remote["ts"], _remote["fp"]
@@ -593,7 +530,7 @@ def api_status():
     return jsonify({
         "panels": _with_qingyuan(remote or []),
         "ts": now,
-        # 远程数据源（宝塔 / Nightcord-Status）那部分的采集完成时间；前端据此提示数据是否陈旧
+        # 远程数据源（拉取模式的 Nightcord-Status）那部分的采集完成时间；前端据此提示数据是否陈旧
         "remote_ts": remote_ts if remote is not None and has_remote else None,
         "remote_pending": remote is None and has_remote,
         "thresholds": _thresholds(),
@@ -715,7 +652,7 @@ def api_metrics_version():
 
 @app.route("/api/metrics/history")
 def api_metrics_history():
-    """给前端历史趋势图用的读接口，跟其它面板数据一样走 dashboard_auth。"""
+    """给前端历史趋势图用的读接口，跟其它看板数据一样走 dashboard_auth。"""
     panel = request.args.get("panel", "")
     if not panel:
         return jsonify({"error": "缺少 panel 参数"}), 400
@@ -827,7 +764,7 @@ _SETTINGS_FORWARD = """<!DOCTYPE html>
 <script>
 (function(){
   var pages = {appearance:'theme', theme:'theme', kaomoji:'kaomoji', notify:'notify', agents:'agents',
-               deploy:'deploy', login:'login', panels:'panels'};
+               deploy:'deploy', login:'login'};
   var m = location.hash.match(/^#s=(\\w+)$/);
   var key = m && Object.prototype.hasOwnProperty.call(pages, m[1]) ? pages[m[1]] : null;
   location.replace('/' + (key ? '#s=' + key : '#p=5'));
@@ -870,7 +807,7 @@ def api_save_config():
     errors = update_config(merge_and_save)
     if errors:
         return jsonify({"errors": errors}), 400
-    _invalidate_remote()  # 配置变了（面板增删、地址改了），远程缓存作废，下次 /api/status 后台重新采集
+    _invalidate_remote()  # 配置变了，远程缓存作废，下次 /api/status 后台重新采集
     return jsonify({"ok": True})
 
 
@@ -961,7 +898,7 @@ def _deploy_and_report(ip, port, ssh_user, password, remember, panel_name_overri
     队列里的日志行 yield 出去，deploy_agent() 结束后队列收到 "done" 哨兵才收尾。
     """
     if not os.path.exists(CONFIG_PATH):
-        return jsonify({"error": "还没有 config.yaml，先在设置页保存至少一台面板"}), 400
+        return jsonify({"error": "还没有 config.yaml，先在设置页保存一次配置"}), 400
 
     def ensure_metrics_agent_secret(cfg):
         _ensure_metrics_agent_secret(cfg)
@@ -1048,20 +985,7 @@ def api_agent_deploy():
     if not ip or not password:
         return jsonify({"error": "服务器 IP 和 SSH 密码不能为空"}), 400
 
-    bind_panel = (body.get("bind_panel") or "").strip() or None
-    if bind_panel:
-        # 这台机器如果同时也是某个已配置的宝塔面板，让青源上报强制用那个面板的 name，
-        # 不然宝塔名字（手打的）和青源 panel_name（默认取自远端 hostname）大概率对不上，
-        # 同一台机器会在 dashboard 上拆成两张卡片。
-        try:
-            cfg = load_config()
-        except RuntimeError:
-            return jsonify({"error": "还没有 config.yaml"}), 400
-        known_names = {p.get("name") for p in cfg.get("panels", [])}
-        if bind_panel not in known_names:
-            return jsonify({"error": f"没找到名为「{bind_panel}」的宝塔面板"}), 400
-
-    return _deploy_and_report(ip, port, ssh_user, password, remember, panel_name_override=bind_panel)
+    return _deploy_and_report(ip, port, ssh_user, password, remember)
 
 
 @app.route("/api/agent/hosts", methods=["GET"])
@@ -1083,8 +1007,8 @@ def api_agent_redeploy(host_id):
     cred = agent_hosts.get_host_credentials(cfg, host_id)
     if not cred:
         return jsonify({"error": "没找到这台已保存的服务器（可能当时没勾选记住密码，或密钥文件变了）"}), 404
-    # 沿用上次部署时实际用的 panel_name（不管当初是自动读的 hostname 还是手动绑定的宝塔面板名），
-    # 不重新探测 hostname——不然身份会在每次重新部署之间漂移，之前靠名字/IP 对上的卡片又会拆开。
+    # 沿用上次部署时实际用的 panel_name，不重新探测 hostname——不然改过 hostname 的机器重新部署后
+    # 会换个名字上报，在看板上变成一台新机器，旧名字那张卡片留成离线。
     saved = next((h for h in agent_hosts.list_hosts(cfg) if h["id"] == host_id), None)
     panel_name_override = saved["panel_name"] if saved and saved.get("panel_name") else None
     return _deploy_and_report(
@@ -1100,7 +1024,7 @@ def api_agent_delete_host(host_id):
 
 
 def _alert_round():
-    """一轮告警巡检：拉取所有面板数据、判断阈值、发送告警和恢复通知，并顺带刷新缓存。"""
+    """一轮告警巡检：拉取所有数据、判断阈值、发送告警和恢复通知，并顺带刷新缓存。"""
     cfg = load_config()
     data = fetch_all()  # 也会刷新远程缓存
 
@@ -1109,17 +1033,17 @@ def _alert_round():
     _notifier.update_config(notif_cfg)
     active_keys = set()
     for panel_result in data:
-        if panel_result.get("kind") == "qingyuan-only":
-            continue  # 只装了青源的机器由下面的 plan_agent_alerts 统一判断，这里再报就重复了
-        for alert in evaluate_alerts(panel_result, thresholds):
+        if panel_result.get("kind") != "nightcord-status":
+            continue  # 青源机器由下面的 plan_agent_alerts 统一判断
+        for alert in evaluate_status_alerts(panel_result):
             active_keys.add(alert["key"])
             _notifier.notify(alert)
-        if panel_result.get("kind") == "nightcord-status" and panel_result.get("online") is False:
+        if panel_result.get("online") is False:
             # 看不到 2702 的数据不等于它报过的故障都好了：保持原状，不发"已恢复"
             active_keys.update(_notifier.active_keys_with_prefix(
                 nightcord_target_key_prefix(panel_result.get("name", ""))))
 
-    # 青源（自建 agent）上报的机器不一定跟宝塔面板重名，要单独判断：在线的按最新样本比阈值，
+    # 青源（自建 agent）上报的机器：在线的按最新样本比阈值，
     # 离线的报离线（全部同时离线时合并成一条）。卸载掉的机器在设置页"移除"后就不再盯。
     now = time.time()
     agent_alerts, keep_keys = plan_agent_alerts(
