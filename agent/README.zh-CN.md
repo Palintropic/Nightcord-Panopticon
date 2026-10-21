@@ -44,4 +44,3 @@ rsync -avz --progress agent/ 你的用户名@面板服务器IP:~/nightcord-metri
   只会打日志，不会让进程退出。
 - 密钥错误在 Panopticon 那边会看到 401，字段缺失/类型不对会看到 400——curl 一下
   `report_url` 能帮助快速定位是哪一层的问题。
-- 这个 agent 完全不依赖 BT 面板 API，跟 `bt_client.py` 那条链路互不影响。

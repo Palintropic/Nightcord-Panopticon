@@ -1,20 +1,20 @@
 # 青源（Qingyuan）
 
-自建系统指标监控架构的名字，覆盖 `agent/metrics_agent.py`（面板服务器上的采集/上报端）
+自建系统指标监控架构的名字，覆盖 `agent/metrics_agent.py`（各台服务器上的采集/上报端）
 和 Panopticon 侧的 `metrics_store.py` + `app.py` 里的 `/api/metrics/*` 接口这一整条链路。
-跟 BT 面板 API 那条链路（`bt_client.py`）并列、互不影响——业务数据继续问 BT，系统级指标走青源。
+Panopticon 看板上的机器数据全部来自青源（早先并列的宝塔面板 API 数据源已经去掉）。
 
 - **当前版本**：`7.17-beta`
 - **内部开发代号**：`yukisakura`（仅内部记录用，不出现在面向用户的文档/界面里）
 - **状态**：beta——接口、存储 schema、前端历史趋势图都已经过本机端到端验证（鉴权、字段校验、历史读写、
-  清理、图表渲染都测过），也已经在真实生产环境的多台服务器上跑通（同名机器自动合并卡片、跨 WireGuard
-  上报、ufw 放行等都验证过），仍标 beta 是因为还没经过长时间稳定性观察。
+  清理、图表渲染都测过），也已经在真实生产环境的多台服务器上跑通（跨 WireGuard 上报、ufw 放行等
+  都验证过），仍标 beta 是因为还没经过长时间稳定性观察。
 
 ## 组成
 
 | 文件 | 作用 |
 |---|---|
-| `agent/metrics_agent.py` | 跑在各面板服务器，采集 CPU/内存/磁盘/网络/swap/负载/进程数/连接数/开机时间，定时 push |
+| `agent/metrics_agent.py` | 跑在各台服务器，采集 CPU/内存/磁盘/网络/swap/负载/进程数/连接数/开机时间，定时 push |
 | `agent/agent_config.example.yaml` | agent 的配置模板（手动部署时用，见 `agent/README.zh-CN.md`） |
 | `agent/nightcord-metrics-agent.service` | agent 的 systemd 部署示例 |
 | `metrics_store.py` | Panopticon 侧的 SQLite 存储层（`metrics.db`） |
@@ -66,10 +66,10 @@
 agent 上报走的是 `config.yaml` 里 `metrics_agent.report_url`（没填的话会退而求其次猜一个，见下面
 「一键部署踩坑」）。这个地址该填什么，取决于 agent 跑在哪：
 
-- **agent 跟 Panopticon 是同一台机器**（比如宝塔面板服务器本身也跑着 Panopticon）：直接填
+- **agent 跟 Panopticon 是同一台机器**（给跑 Panopticon 的那台服务器自己也装上 agent）：直接填
   `http://127.0.0.1:1810` 就行，不需要 WireGuard，本机回环访问不存在跨网络的问题。
 - **agent 跑在别的机器上**：这时候才需要 Panopticon 和这台机器之间有一条互通的内网路径——
-  WireGuard 是推荐做法（见 [README.zh-CN.md](README.zh-CN.md#推荐架构panopticon-长期公网可见宝塔面板后台完全收进-wireguard)
+  WireGuard 是推荐做法（见 [README.zh-CN.md](README.zh-CN.md#推荐架构agent-走-wireguard-上报)
   的整体架构说明），`report_url` 填 Panopticon 在 WireGuard 网段里的地址（例如 `http://10.10.0.1:1810`）。
   不建议图省事直接把 1810 端口暴露公网——这个接口只有共享密钥鉴权，没有来源限制，公网直连意味着
   任何拿到密钥的人都能往里灌假数据，攻击面跟"必要性"完全不成比例。
@@ -95,6 +95,8 @@ agent 会拿到一个只在它自己身上才有意义的地址，上报永远�
     全部同时离线合并成一条。详见上面「离线判定」。
   - **恢复通知**：告警解除时发绿色"已恢复"卡片（不 @所有人）和邮件。
   - **给 2702 的心跳接口** `GET /api/agents/heartbeat`（`status_api.token` 鉴权）。
+  - **去掉宝塔面板数据源**：看板只用青源数据，每台 agent 一张卡片；设置页的「宝塔面板」页和
+    部署时"绑定到已有宝塔面板"选项一并去掉。旧 `config.yaml` 里留下的 `panels` 段会被忽略，下次在设置页保存时清掉。
   - **更多系统指标**：agent 多报 swap、负载（1/5/15）、核数、进程数、已建立的 TCP 连接数、开机时间。
     机器表格多了 Swap、负载两列，机器详情「概览」多了一组「系统」，历史图多了 Swap 和负载两条虚线
     （负载按每核折算到 0–100%）。这些只显示、不设阈值告警。老 agent 和 ESXi 上报器不带这些字段，
