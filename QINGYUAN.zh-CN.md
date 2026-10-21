@@ -14,7 +14,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `agent/metrics_agent.py` | 跑在各面板服务器，采集 CPU/内存/磁盘/网络，定时 push |
+| `agent/metrics_agent.py` | 跑在各面板服务器，采集 CPU/内存/磁盘/网络/swap/负载/进程数/连接数/开机时间，定时 push |
 | `agent/agent_config.example.yaml` | agent 的配置模板（手动部署时用，见 `agent/README.zh-CN.md`） |
 | `agent/nightcord-metrics-agent.service` | agent 的 systemd 部署示例 |
 | `metrics_store.py` | Panopticon 侧的 SQLite 存储层（`metrics.db`） |
@@ -95,6 +95,12 @@ agent 会拿到一个只在它自己身上才有意义的地址，上报永远�
     全部同时离线合并成一条。详见上面「离线判定」。
   - **恢复通知**：告警解除时发绿色"已恢复"卡片（不 @所有人）和邮件。
   - **给 2702 的心跳接口** `GET /api/agents/heartbeat`（`status_api.token` 鉴权）。
+  - **更多系统指标**：agent 多报 swap、负载（1/5/15）、核数、进程数、已建立的 TCP 连接数、开机时间。
+    机器表格多了 Swap、负载两列，机器详情「概览」多了一组「系统」，历史图多了 Swap 和负载两条虚线
+    （负载按每核折算到 0–100%）。这些只显示、不设阈值告警。老 agent 和 ESXi 上报器不带这些字段，
+    照常上报，显示 "-"；乱值存 NULL，不会让整次上报失败。
+  - **重启通知**：开机时间比上次记的晚 2 分钟以上，就发一条橙色"机器重启通知"（不 @所有人，没有恢复）。
+    第一次上报不算；没带开机时间的上报不会改掉上次记的值。
 - `7.17-beta`（代号 `yukisakura`）——比初版多了一整圈能力：
   - **IP 采集**：agent 上报内网 IP（出口路由探测）+ 公网 IP（可关），告警卡片和 dashboard 卡片都能显示。
   - **磁盘从"只看根分区"升级成真实多挂载点**：枚举所有真实块设备，每个都是真实 total/used/percent，

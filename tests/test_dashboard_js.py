@@ -29,5 +29,31 @@ class DashboardStatusBarTests(unittest.TestCase):
         self.assertNotIn("刷新失败", self.steps["oldData"])
 
 
+    def _row(self, name):
+        rows = self.steps["machines"].split('class="machine-row"')
+        return next(r for r in rows if f'<span class="name">{name}</span>' in r)
+
+    def test_table_shows_swap_and_load(self):
+        self.assertIn('<span class="num">Swap</span><span class="num">负载</span>', self.steps["machines"])
+        row = self._row("new")
+        self.assertIn('<span class="num">12.5%</span>', row)
+        self.assertIn('<span class="num">0.42</span>', row)
+
+    def test_machine_without_swap_says_so(self):
+        self.assertIn('<span class="num">无</span>', self._row("noswap"))
+        self.assertIn("未启用", self.steps["overviewNoSwap"])
+
+    def test_old_agent_shows_dashes_and_no_system_group(self):
+        row = self._row("old")
+        self.assertEqual(row.count('<span class="num">-</span>'), 2)
+        self.assertNotIn('<div class="group-header">系统</div>', self.steps["overviewOld"])
+        self.assertNotIn("进程数", self.steps["overviewOld"])
+
+    def test_overview_lists_the_new_system_fields(self):
+        html = self.steps["overviewNew"]
+        for text in ("0.42 / 0.30 / 0.25（4 核）", "187", "23", "1 天 1 小时", "TCP 连接（已建立）"):
+            self.assertIn(text, html)
+
+
 if __name__ == "__main__":
     unittest.main()

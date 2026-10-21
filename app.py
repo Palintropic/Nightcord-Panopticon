@@ -22,7 +22,7 @@ from werkzeug.security import check_password_hash
 import webauthn_manager as wam
 from bt_client import BTClient
 from nightcord_status_client import NightcordStatusClient
-from notifier import Notifier, evaluate_alerts, nightcord_target_key_prefix, plan_agent_alerts
+from notifier import Notifier, evaluate_alerts, format_duration, nightcord_target_key_prefix, plan_agent_alerts
 from auth import BruteForceGuard, get_client_ip
 from config_editor import redact_for_display, merge_submitted, appearance_of, clean_appearance, kaomoji_of, clean_kaomoji
 from agent_deploy import deploy_agent, AgentDeployError
@@ -63,6 +63,8 @@ _notifier = Notifier({}, watch_generations=metrics_store.watch_generations)
 
 ALERT_CHECK_INTERVAL = 60  # 秒，后台告警巡检间隔（与前端是否打开无关）
 AGENT_STALE_SECONDS = 180  # 秒，青源 agent 超过这么久没上报就不当它在线（默认上报间隔 60s，留够 3 倍余量）
+# 开机时间比上次记的晚这么多才算重启过。boot_time 是"现在 - 已运行时长"算出来的，NTP 校时会让它抖几秒
+REBOOT_MIN_SHIFT_SECONDS = 120
 METRICS_PRUNE_INTERVAL = 3600  # 秒，自建监控 agent 历史数据的清理巡检间隔
 METRICS_REPORT_PATH = "/api/metrics/report"
 AGENT_HEARTBEAT_PATH = "/api/agents/heartbeat"
@@ -475,6 +477,7 @@ def _agent_states(now):
             "generation": row["generation"],
             "online": now - row["seen_at"] <= AGENT_STALE_SECONDS,
             "sample": metrics_store.get_latest(panel),
+            "system": metrics_store.get_system(panel),
             "disk_detail": metrics_store.get_disk_detail(panel),
             "ip_internal": ip.get("ip_internal"),
             "ip_external": ip.get("ip_external"),
@@ -521,6 +524,15 @@ def _merge_qingyuan(results):
             "mem": sample.get("mem"),
             "disk": sample.get("disk"),
             "disk_detail": state["disk_detail"],
+            "swap": sample.get("swap"),
+            "swap_total": state["system"]["swap_total"],
+            "load1": sample.get("load1"),
+            "load5": sample.get("load5"),
+            "load15": sample.get("load15"),
+            "cores": state["system"]["cores"],
+            "procs": sample.get("procs"),
+            "tcp_established": sample.get("tcp_established"),
+            "boot_time": state["system"]["boot_time"],
             "ts": sample.get("ts"),
             "ip_internal": state["ip_internal"],
             "ip_external": state["ip_external"],
@@ -588,6 +600,58 @@ def api_status():
     })
 
 
+def _number(value, low, high, cast=float):
+    """上报里的可选数值：类型不对、不是有限数、超出合理范围的一律当没报（存 NULL），不让整次上报失败。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        v = cast(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if v != v or not low <= v <= high:  # v != v 筛掉 NaN
+        return None
+    return v
+
+
+def _optional_metrics(body, now):
+    """新版 agent 才带的字段，见 agent/metrics_agent.py 的 collect_system。"""
+    extra = {
+        "swap": _number(body.get("swap"), 0, 100),
+        "load1": _number(body.get("load1"), 0, 1e6),
+        "load5": _number(body.get("load5"), 0, 1e6),
+        "load15": _number(body.get("load15"), 0, 1e6),
+        "procs": _number(body.get("procs"), 0, 10_000_000, int),
+        "tcp_established": _number(body.get("tcp_established"), 0, 100_000_000, int),
+    }
+    system = {
+        # 2000-01-01 之前或者比现在还晚一天的开机时间都是乱值
+        "boot_time": _number(body.get("boot_time"), 946684800, now + 86400, int),
+        "cores": _number(body.get("cores"), 1, 100_000, int),
+        "swap_total": _number(body.get("swap_total"), 0, 2**62, int),
+    }
+    return extra, system
+
+
+def _notify_reboot(panel, previous_boot, boot_time, ip_internal, ip_external):
+    """开机时间往后跳了：机器重启过。重启本身已经结束了，所以是一条普通通知，不算告警、没有恢复。"""
+    try:
+        notif_cfg = load_config().get("notifications", {})
+    except RuntimeError:
+        return
+    fmt = "%Y-%m-%d %H:%M:%S"
+    alert = {
+        "server": panel,
+        "alert_type": "机器重启通知",
+        "content": f"开机时间从 {time.strftime(fmt, time.localtime(previous_boot))} "
+                   f"变成了 {time.strftime(fmt, time.localtime(boot_time))}，这台机器重启过。"
+                   f"现在已经运行约 {format_duration(max(0, time.time() - boot_time))}。",
+        "ip_internal": ip_internal,
+        "ip_external": ip_external,
+    }
+    # 发飞书 / 邮件可能要好几秒，别让 agent 的上报请求等着
+    threading.Thread(target=Notifier(notif_cfg).send_event, args=(alert,), daemon=True).start()
+
+
 @app.route(METRICS_REPORT_PATH, methods=["POST"])
 def api_metrics_report():
     """自建监控 agent（agent/metrics_agent.py）的上报入口，机器对机器调用。
@@ -616,9 +680,16 @@ def api_metrics_report():
     if not panel:
         return jsonify({"error": "缺少 panel"}), 400
 
-    metrics_store.insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps)
-    metrics_store.mark_seen(panel, time.time())
+    now = time.time()
+    extra, system = _optional_metrics(body, now)
+    metrics_store.insert_sample(panel, ts, cpu, mem, disk, net_in_kbps, net_out_kbps, extra)
+    metrics_store.mark_seen(panel, now)
     metrics_store.upsert_ip(panel, body.get("ip_internal"), body.get("ip_external"))
+    previous_boot = metrics_store.update_system(panel, system["boot_time"], system["cores"], system["swap_total"])
+    if (system["boot_time"] is not None and previous_boot is not None
+            and system["boot_time"] - previous_boot > REBOOT_MIN_SHIFT_SECONDS):
+        ip = metrics_store.get_ip(panel)
+        _notify_reboot(panel, previous_boot, system["boot_time"], ip.get("ip_internal"), ip.get("ip_external"))
 
     disk_detail = body.get("disk_detail")
     if isinstance(disk_detail, list):

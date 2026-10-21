@@ -11,7 +11,7 @@
 
   /* Machine table: list items 40 high; square status mark sized by eye (as PNS's score dot). */
   .machine-list{margin:var(--gutter) calc(-1 * var(--page-margin)) 0}
-  .machine-row,.machine-head{display:grid;grid-template-columns:16px minmax(0,1fr) 72px 72px 72px 132px;
+  .machine-row,.machine-head{display:grid;grid-template-columns:16px minmax(0,1fr) 72px 72px 72px 72px 72px 132px;
               align-items:center;gap:var(--gutter);min-height:var(--list-item-min-height);
               padding:8px var(--page-margin);text-decoration:none}
   .machine-head{min-height:0;padding-top:0;padding-bottom:4px;font:var(--type-caption);color:var(--SystemBaseMedium)}
@@ -77,6 +77,7 @@
   .chart svg{display:block;width:100%;height:200px}
   .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font:var(--type-caption)}
   .legend i{display:inline-block;width:12px;height:2px;vertical-align:middle;margin-right:6px}
+  .legend i.dash{height:0;border-top:2px dashed;background:none}
 
   /* Settings. Home is a list of categories (as Windows 10 Mobile Settings): Body title over a
      Caption hint, rows 40+ high with the list pointer-over. Each category opens as its own page. */
@@ -363,6 +364,13 @@ function fmtBytes(v){
   return v.toFixed(1)+units[i];
 }
 function fmtPct(v){ return (v === undefined || v === null || isNaN(v)) ? '-' : Number(v).toFixed(1) + '%'; }
+function fmtNum(v, digits){ return (v === undefined || v === null || isNaN(v)) ? '-' : Number(v).toFixed(digits); }
+function fmtUptime(bootTime){
+  if(!bootTime) return '-';
+  const m = Math.max(0, Math.floor((Date.now()/1000 - bootTime) / 60));
+  const d = Math.floor(m / 1440), h = Math.floor(m % 1440 / 60);
+  return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m % 60} 分钟` : `${m} 分钟`;
+}
 function fmtAgo(ts){
   if(!ts) return '-';
   const s = Math.max(0, Date.now()/1000 - ts);
@@ -435,7 +443,11 @@ function machineMetrics(p){
   const memText = !qyMem && memUsed !== undefined && memTotal ? `${memUsed}G / ${memTotal}G` : null;
   const disks = diskRows(p);
   const disk = disks.length ? Math.max(...disks.map(d => d.percent)) : undefined;
-  return {cpu, mem, memText, disk, disks};
+  // swap: null with swap_total 0 means the machine has no swap; an old agent reports neither.
+  const swap = q ? q.swap : undefined;
+  const noSwap = !!(q && q.swap_total === 0);
+  const load1 = q && q.load1 !== null && q.load1 !== undefined ? q.load1 : (net.load ? net.load.one : undefined);
+  return {cpu, mem, memText, disk, disks, swap, noSwap, load1};
 }
 
 // '' = healthy, 'caution' = near a threshold, 'warn' = needs attention.
@@ -684,7 +696,7 @@ function machinesView(){
   if(empty) return empty;
   const th = thresholds();
   const head = `<div class="machine-head"><span></span><span>机器</span>
-    <span class="num">CPU</span><span class="num">内存</span><span class="num">磁盘</span><span class="num">最后上报</span></div>`;
+    <span class="num">CPU</span><span class="num">内存</span><span class="num">磁盘</span><span class="num">Swap</span><span class="num">负载</span><span class="num">最后上报</span></div>`;
   return `<div class="machine-list">${head}${panels().map(p => {
     const state = stateOf(p);
     const name = escapeHtml(p.name || '未命名面板');
@@ -692,7 +704,7 @@ function machinesView(){
     if(p.kind === 'nightcord-status'){
       const text = escapeHtml(stateText(p));
       return `<a class="machine-row" href="${href}"><span class="mark ${state || 'ok'}"></span><span class="name">${name}</span>
-        <span class="num"></span><span class="num"></span><span class="num"></span><span class="seen ${state}">${text}</span>
+        <span class="num"></span><span class="num"></span><span class="num"></span><span class="num"></span><span class="num"></span><span class="seen ${state}">${text}</span>
         <span class="summary ${state}">${text}</span></a>`;
     }
     const m = machineMetrics(p);
@@ -700,11 +712,14 @@ function machinesView(){
     const offline = isOffline(p);
     const seenAt = p.qingyuan && p.qingyuan.seen_at;
     const cell = (v, t) => blank ? '<span class="num">-</span>' : `<span class="num ${levelOf(v, t)}">${escapeHtml(fmtPct(v))}</span>`;
+    // Swap and load are shown only, without thresholds (no alerts on them yet).
+    const plain = text => `<span class="num">${blank ? '-' : escapeHtml(text)}</span>`;
+    const swapText = m.noSwap ? '无' : fmtPct(m.swap);
     const numbers = `CPU ${escapeHtml(fmtPct(m.cpu))} · 内存 ${escapeHtml(fmtPct(m.mem))} · 磁盘 ${escapeHtml(fmtPct(m.disk))}`;
     const summary = blank ? escapeHtml(stateText(p)) : offline ? `${numbers} · ${escapeHtml(stateText(p))}` : numbers;
     const seen = offline ? escapeHtml(stateText(p)) : escapeHtml(fmtAgo(seenAt));
     return `<a class="machine-row" href="${href}"><span class="mark ${state || 'ok'}"></span><span class="name">${name}</span>
-      ${cell(m.cpu, th.cpu)}${cell(m.mem, th.mem)}${cell(m.disk, th.disk)}
+      ${cell(m.cpu, th.cpu)}${cell(m.mem, th.mem)}${cell(m.disk, th.disk)}${plain(swapText)}${plain(fmtNum(m.load1, 2))}
       <span class="seen ${offline ? 'warn' : ''}">${seen}</span>
       <span class="summary ${offline ? 'warn' : ''}">${summary}</span></a>`;
   }).join('')}</div>`;
@@ -901,6 +916,7 @@ function overviewItem(p){
     html += metric('网络 ↑ / ↓', `${fmtBytes(net.up*1024)}/s ↑  ${fmtBytes(net.down*1024)}/s ↓`, '');
   }
   html += '</div></div>';
+  html += agentSystemGroup(p);
   const ext = (q && q.ip_external) || p.ip_external;
   const int_ = q && q.ip_internal;
   if(ext || int_ || p.url){
@@ -914,6 +930,25 @@ function overviewItem(p){
   const dbs = p.databases && (p.databases.data || (Array.isArray(p.databases) ? p.databases : null));
   if(dbs) html += `<div class="group">${metric('数据库', String(dbs.length), '')}</div>`;
   return html + rawData(p);
+}
+
+// Swap, load, processes, connections and uptime from a Qingyuan agent. Old agents and the ESXi
+// reporter send none of these: every field reads "-" and the group is left out entirely.
+function agentSystemGroup(p){
+  const q = liveQingyuan(p);
+  if(!q) return '';
+  const fields = [q.swap, q.swap_total, q.load1, q.procs, q.tcp_established, q.boot_time];
+  if(fields.every(v => v === undefined || v === null)) return '';
+  let html = '<div class="group"><div class="group-header">系统</div><div class="fields">';
+  html += metric('负载 (1/5/15)', `${fmtNum(q.load1, 2)} / ${fmtNum(q.load5, 2)} / ${fmtNum(q.load15, 2)}`
+    + (q.cores ? `（${q.cores} 核）` : ''), '');
+  html += q.swap_total === 0 ? metric('Swap', '未启用', '')
+    : metric('Swap', `${fmtPct(q.swap)}${q.swap_total ? `（共 ${fmtBytes(q.swap_total)}）` : ''}`, '', q.swap);
+  html += metric('进程数', fmtNum(q.procs, 0), '');
+  html += metric('TCP 连接（已建立）', fmtNum(q.tcp_established, 0), '');
+  html += metric('开机时长', fmtUptime(q.boot_time), '');
+  if(q.boot_time) html += metric('开机时间', new Date(q.boot_time*1000).toLocaleString(), '');
+  return html + '</div></div>';
 }
 
 function diskItem(p){
@@ -984,19 +1019,37 @@ async function loadChart(panelName){
     const minTs = Math.min(...tsList), span = Math.max(Math.max(...tsList) - minTs, 1);
     const x = t => ((t - minTs) / span) * w;
     const y = v => h - (Math.min(100, Math.max(0, v ?? 0)) / 100) * (h - 4) - 2;
+    const panel = panels().find(p => p.name === panelName);
+    const cores = panel && panel.qingyuan && panel.qingyuan.cores;
     // CPU in BaseHigh, memory in the accent, disk in BaseMedium: no semantic colours.
     const series = [
       {k:'cpu', label:'CPU', color:'var(--SystemBaseHigh)'},
       {k:'mem', label:'内存', color:'var(--SystemAccent)'},
       {k:'disk', label:'磁盘', color:'var(--SystemBaseMedium)'},
-    ];
+      // Added later: dashed so they read as secondary. Load is drawn per core (load1 / cores) so it
+      // shares the 0-100 axis; the legend still shows the raw load.
+      {k:'swap', label:'Swap', color:'var(--SystemAccent)', dash:true, value:d => d.swap},
+      {k:'load1', label:'负载', color:'var(--SystemBaseHigh)', dash:true,
+        value:d => cores && d.load1 !== null && d.load1 !== undefined ? d.load1 / cores * 100 : null,
+        text:d => fmtNum(d.load1, 2) + (cores ? `（${cores} 核）` : '')},
+    ].filter(s => !s.dash || samples.some(d => s.value(d) !== null && s.value(d) !== undefined));
     const grid = [0, 50, 100].map(v => `<line x1="0" x2="${w}" y1="${y(v)}" y2="${y(v)}" stroke="var(--SystemBaseLow)" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('');
-    const lines = series.map(s => `<polyline points="${samples.map(d => `${x(d.ts).toFixed(1)},${y(d[s.k]).toFixed(1)}`).join(' ')}"
-      fill="none" stroke="${s.color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`).join('');
+    // Samples without a value (an older agent) break the line instead of dropping it to 0.
+    const runs = s => {
+      const out = [[]], get = s.value || (d => d[s.k]);
+      samples.forEach(d => {
+        const v = get(d);
+        if(v === null || v === undefined){ if(out[out.length - 1].length) out.push([]); return; }
+        out[out.length - 1].push(`${x(d.ts).toFixed(1)},${y(v).toFixed(1)}`);
+      });
+      return out.filter(r => r.length);
+    };
+    const lines = series.map(s => runs(s).map(r => `<polyline points="${r.join(' ')}"
+      fill="none" stroke="${s.color}" stroke-width="2" ${s.dash ? 'stroke-dasharray="6 4"' : ''} vector-effect="non-scaling-stroke"/>`).join('')).join('');
     const last = samples[samples.length - 1];
     el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${grid}${lines}</svg>
-      <div class="legend">${series.map(s => `<span><i style="background:${s.color}"></i>${s.label} ${escapeHtml(fmtPct(last[s.k]))}</span>`).join('')}
-      <span class="caption">网格线 0 / 50 / 100%</span></div>`;
+      <div class="legend">${series.map(s => `<span><i class="${s.dash ? 'dash' : ''}" style="${s.dash ? 'color' : 'background'}:${s.color}"></i>${s.label} ${escapeHtml(s.text ? s.text(last) : fmtPct(last[s.k]))}</span>`).join('')}
+      <span class="caption">网格线 0 / 50 / 100%${series.some(s => s.k === 'load1') ? '；负载按每核折算' : ''}</span></div>`;
   }catch(e){
     if(request !== chartRequest || document.getElementById('chart') !== el) return;  // superseded
     el.innerHTML = '<div class="empty-hint">加载失败</div>';
