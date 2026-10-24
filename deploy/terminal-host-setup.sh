@@ -12,9 +12,10 @@
 # Forwarding is not touched here: certificates carry only permit-pty, so terminal logins get no port,
 # agent or X11 forwarding while the account's other logins keep working as before.
 #
-# Safe to run again with the same CA. A different CA is refused unless --replace-ca is given (it would
-# invalidate certificates from the old one). Existing files are backed up first; if `sshd -t` rejects the
-# result, everything is put back and sshd is not reloaded.
+# Safe to run again with the same CA. A different CA is refused unless --replace-ca is given: switching
+# takes effect at once, and certificates from the old CA stop working (there is no grace period).
+# Existing files are backed up first; if any step fails (a write, `sshd -t`, the reload), everything is
+# put back, and sshd is reloaded onto the old files if it had already been reloaded.
 # Undo: delete the three paths above and reload sshd.
 set -euo pipefail
 
@@ -44,16 +45,27 @@ if [[ -f "$ca_file" && "$(cut -d' ' -f1-2 "$ca_file")" != "$new_key" && "$replac
   exit 4
 fi
 
-# Back up whatever exists, so a rejected config can be put back exactly.
+# Back up whatever exists, so any failure (a write, `sshd -t`, the reload) puts things back exactly.
 backup=$(mktemp -d /etc/ssh/.panopticon-backup.XXXXXX)
+created_principals_dir=0
+[[ -d "$principals_dir" ]] || created_principals_dir=1
 for f in "$ca_file" "$principals_file" "$conf_file"; do
   [[ -e "$f" ]] && cp -a "$f" "$backup/$(basename "$f")"
 done
-restore() {
+committed=0
+rollback() {
+  [[ $committed == 1 ]] && { rm -rf "$backup"; return; }
+  echo "setup failed; restoring the previous files" >&2
   for f in "$ca_file" "$principals_file" "$conf_file"; do
     if [[ -e "$backup/$(basename "$f")" ]]; then cp -a "$backup/$(basename "$f")" "$f"; else rm -f "$f"; fi
   done
+  [[ $created_principals_dir == 1 ]] && rmdir "$principals_dir" 2>/dev/null
+  rm -f /etc/ssh/.panopticon.* "$conf_dir"/.panopticon.* "$principals_dir"/.panopticon.* 2>/dev/null
+  rm -rf "$backup"
+  if [[ $reloaded == 1 ]]; then reload_sshd || true; fi   # put the running sshd back on the old files
 }
+reloaded=0
+trap rollback EXIT
 
 write() {  # write <path> <content>: via a temporary file in the same directory, then rename
   local tmp
@@ -63,6 +75,16 @@ write() {  # write <path> <content>: via a temporary file in the same directory,
   mv -f "$tmp" "$1"
 }
 
+reload_sshd() {
+  if command -v systemctl >/dev/null && systemctl is-active --quiet ssh 2>/dev/null; then
+    systemctl reload ssh
+  elif command -v systemctl >/dev/null && systemctl is-active --quiet sshd 2>/dev/null; then
+    systemctl reload sshd
+  else
+    echo "config written and checked; reload sshd yourself"
+  fi
+}
+
 install -d -m 0755 "$principals_dir"
 write "$ca_file" "$ca_line"
 write "$principals_file" "$account"
@@ -70,20 +92,10 @@ write "$conf_file" "# Panopticon web terminal: logins with a certificate from it
 TrustedUserCAKeys $ca_file
 AuthorizedPrincipalsFile $principals_dir/%u"
 
-if ! sshd -t; then
-  echo "sshd -t rejected the new configuration; restoring the previous files" >&2
-  restore
-  rm -rf "$backup"
-  exit 5
-fi
-rm -rf "$backup"
+sshd -t
+reloaded=1
+reload_sshd
+committed=1
 
-if command -v systemctl >/dev/null && systemctl is-active --quiet ssh 2>/dev/null; then
-  systemctl reload ssh
-elif command -v systemctl >/dev/null && systemctl is-active --quiet sshd 2>/dev/null; then
-  systemctl reload sshd
-else
-  echo "config written and checked; reload sshd yourself"
-fi
 echo "host key for Panopticon's config (terminal.hosts.<id>.host_key):"
 cat /etc/ssh/ssh_host_ed25519_key.pub

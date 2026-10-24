@@ -13,18 +13,23 @@
 import base64
 import ipaddress
 import json
+import os
 import queue
 import re
 import secrets
 import socket
 import threading
 import time
+import unicodedata
 from datetime import datetime
 
 import paramiko
 import requests
 
 import metrics_store
+
+# 这个进程的标记，记在每个终端会话上：重启时只替别的（已经不在的）进程补记结束，不碰自己正开着的
+WORKER_ID = f"{os.getpid()}-{secrets.token_hex(4)}"
 
 HOST_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 LOGIN_USER = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
@@ -34,7 +39,9 @@ TICKETS_PER_SESSION = 3
 MAX_PER_USER = 3
 MAX_TOTAL = 8            # 每个终端占 gunicorn 一个线程，留够给看板本身
 IDLE_SECONDS = 15 * 60   # 这么久没有键盘输入就断开
-OUTPUT_BACKLOG = 256     # 发往浏览器的输出最多积压这么多块（每块最多 32 KB），浏览器读得太慢就断开
+OUTPUT_BACKLOG = 64      # 发往浏览器的输出最多积压这么多块（每块最多 32 KB）；满了就让 SSH 那边等着
+STALL_SECONDS = 30       # 积压满了、这么久一块都推不出去，才算浏览器不读了
+DRAIN_SECONDS = 10       # 目标机已经说完、等积压发完最多这么久
 MAX_SECONDS = 2 * 3600   # 单次最长
 CONNECT_TIMEOUT = 10
 OUTBOX_MAX_ATTEMPTS = 100  # 后台每分钟重试一次，推不出去的审计最多重试这么多次
@@ -45,7 +52,7 @@ END_REASONS = {
     "browser_closed": "浏览器关掉了",
     "idle": f"{IDLE_SECONDS // 60} 分钟没有输入",
     "time_limit": f"超过单次最长 {MAX_SECONDS // 3600} 小时",
-    "slow_browser": "浏览器收得太慢，输出积压太多",
+    "slow_browser": f"浏览器 {STALL_SECONDS} 秒都没收输出",
     "host_key_mismatch": "主机指纹对不上，没有连",
     "connect_failed": "连不上目标机",
     "unknown": "Panopticon 重启时还开着，结束时间不确定",
@@ -224,24 +231,34 @@ def clamp_size(cols, rows):
     return num(cols, 10, 500, 80), num(rows, 4, 200, 24)
 
 
-def bridge(ws, chan, closed_errors, clock=time.monotonic, idle=IDLE_SECONDS, limit=MAX_SECONDS):
+def bridge(ws, chan, closed_errors, abort, clock=time.monotonic, idle=IDLE_SECONDS, limit=MAX_SECONDS,
+           stall=STALL_SECONDS, drain=DRAIN_SECONDS):
     """
     在浏览器和目标机之间来回转发，直到一边结束。返回 (原因, 输入字节数, 输出字节数)。
     浏览器 → 这里：文本帧 JSON，{"t":"in","d":"..."} 是键盘输入，{"t":"resize","cols":..,"rows":..} 改窗口大小。
     这里 → 浏览器：二进制帧是终端输出。
-    closed_errors：WebSocket 被对方关掉时 receive 抛的异常类型。
+    closed_errors：WebSocket 被对方关掉时 receive / send 抛的异常类型。
+    abort：断开浏览器那条连接的函数。中途要结束时调它，卡在发送里的线程才能解开。
+
+    三个线程：读目标机（pump）→ 积压队列 → 发给浏览器（deliver，转发期间唯一往 WebSocket 写的线程）；
+    本线程读浏览器的输入。积压满了 pump 就等着，SSH 自己的流量控制会让目标机慢下来——大输出只会
+    变慢，不会被截断；积压满着、stall 秒一块都推不出去，才当浏览器不读了。返回之前两个线程都已退出，
+    之后调用方可以放心往 WebSocket 写最后一句。
     """
     counts = {"in": 0, "out": 0}
-    done = threading.Event()
+    stop = threading.Event()           # 要中途结束：两个线程都该收手
+    talked_out = threading.Event()     # 目标机已经说完（EOF），积压发完 deliver 就退出
     outcome = {}
     backlog = queue.Queue(maxsize=OUTPUT_BACKLOG)
 
-    # 目标机 → 积压队列 → 浏览器，分成两个线程：浏览器不读时卡住的只是发送那个线程，
-    # 读目标机的这边发现队列满了就结束会话（关掉之后发送线程也随 WebSocket 一起解开）。
+    def finish(reason):
+        outcome.setdefault("reason", reason)
+        stop.set()
+
     def pump():
         chan.settimeout(0.5)
         try:
-            while not done.is_set():
+            while not stop.is_set():
                 try:
                     data = chan.recv(32768)
                 except socket.timeout:
@@ -249,50 +266,61 @@ def bridge(ws, chan, closed_errors, clock=time.monotonic, idle=IDLE_SECONDS, lim
                 if not data:
                     outcome.setdefault("reason", "exit")
                     break
-                try:
-                    backlog.put_nowait(data)
-                except queue.Full:
-                    outcome.setdefault("reason", "slow_browser")
-                    break
+                waited_since = clock()
+                while not stop.is_set():
+                    try:
+                        backlog.put(data, timeout=0.5)
+                        break
+                    except queue.Full:
+                        if clock() - waited_since >= stall:
+                            finish("slow_browser")
         except Exception:
             outcome.setdefault("reason", "exit")
         finally:
-            done.set()
+            talked_out.set()
 
     def deliver():
         try:
-            while not (done.is_set() and backlog.empty()):
+            while not stop.is_set():
                 try:
                     data = backlog.get(timeout=0.5)
                 except queue.Empty:
+                    if talked_out.is_set():
+                        break
                     continue
                 ws.send(data)
                 counts["out"] += len(data)
         except closed_errors:
-            outcome.setdefault("reason", "browser_closed")
+            finish("browser_closed")
         except Exception:
-            outcome.setdefault("reason", "browser_closed")
-        finally:
-            done.set()
+            finish("browser_closed")
 
     reader = threading.Thread(target=pump, daemon=True)
     sender = threading.Thread(target=deliver, daemon=True)
     reader.start()
     sender.start()
     started = last_input = clock()
+    drain_from = None
     try:
-        while not done.is_set():
+        while not stop.is_set():
             now = clock()
+            if not sender.is_alive():
+                break                                  # 说完了也发完了，或者浏览器那边断了
+            if talked_out.is_set():
+                drain_from = drain_from if drain_from is not None else now
+                if now - drain_from >= drain:
+                    finish("slow_browser")
+                    break
             if now - last_input >= idle:
-                outcome.setdefault("reason", "idle")
+                finish("idle")
                 break
             if now - started >= limit:
-                outcome.setdefault("reason", "time_limit")
+                finish("time_limit")
                 break
             try:
-                raw = ws.receive(timeout=1)
+                raw = ws.receive(timeout=0.5)
             except closed_errors:
-                outcome.setdefault("reason", "browser_closed")
+                finish("browser_closed")
                 break
             if raw is None:
                 continue
@@ -310,9 +338,16 @@ def bridge(ws, chan, closed_errors, clock=time.monotonic, idle=IDLE_SECONDS, lim
             elif msg.get("t") == "resize":
                 chan.resize_pty(*clamp_size(msg.get("cols"), msg.get("rows")))
     finally:
-        done.set()
-        reader.join(timeout=2)
-        sender.join(timeout=2)
+        stop.set()
+        if sender.is_alive():
+            sender.join(timeout=1)
+        if sender.is_alive():          # 卡在发送里：断开浏览器那条连接，它才会出来
+            try:
+                abort()
+            except Exception:
+                pass
+            sender.join(timeout=5)
+        reader.join(timeout=5)
     return outcome.get("reason", "exit"), counts["in"], counts["out"]
 
 
@@ -322,19 +357,20 @@ def _when(ts):
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
-_PLAIN = str.maketrans({"<": "＜", ">": "＞", "[": "［", "]": "］", "*": "＊", "`": "＇", "\n": " ", "\r": " "})
-
-
 def _plain(value):
     """
-    放进推送正文的字段（名字是用户自己在 SSO 里填的）：去掉飞书 / Slack 会当成标记的字符，
-    免得有人把名字改成 <at id=all></at> 或者一段链接。
+    放进推送正文的字段（名字是用户自己在 SSO 里填的）。推送本身已经是纯文本（飞书 plain_text、
+    Slack 关掉 mrkdwn），这里再去掉不可见的格式字符（方向控制、零宽、行 / 段分隔）和换行，
+    并把 :// 拆开，免得被自动识别成可点的链接。
     """
-    return str(value if value is not None else "?").translate(_PLAIN)[:200]
+    text = str(value if value is not None else "?")
+    text = "".join(" " if unicodedata.category(c) in ("Cc", "Zl", "Zp") else c
+                   for c in text if unicodedata.category(c) != "Cf")
+    return text.replace("://", ": //")[:200]
 
 
 def describe(event):
-    """一条审计的正文：推到飞书和 Slack 的都是这段。"""
+    """一条审计：标题和正文各行。推到飞书和 Slack 的都是这些。"""
     who = f"{_plain(event.get('name'))}（{_plain(event.get('email') or event.get('sub'))}）"
     where = f"{_plain(event.get('label'))}（{_plain(event.get('host'))}，{_plain(event.get('address'))}）"
     lines = [
@@ -356,40 +392,61 @@ def describe(event):
 
 
 def _feishu_card(title, lines, template):
+    # 正文用 plain_text，不是 markdown：用户填的名字不会被当成 @、链接或格式
     return {
         "msg_type": "interactive",
         "card": {
             "schema": "2.0",
             "header": {"title": {"tag": "plain_text", "content": title}, "template": template},
             "body": {"direction": "vertical",
-                     "elements": [{"tag": "markdown", "content": "\n".join(f">{line}" for line in lines)}]},
+                     "elements": [{"tag": "div", "text": {"tag": "plain_text", "content": "\n".join(lines)}}]},
         },
     }
 
 
+def _slack_text(title, lines):
+    # mrkdwn 关掉，再按 Slack 的要求转义 & < >：不会有 @channel、链接或格式
+    text = "\n".join([f"【{title}】"] + lines)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+CLAIM_SECONDS = 60   # 推一条审计时占住它这么久，别的进程不会同时推同一条
+
+
 class Auditor:
+    """
+    审计先和对应的会话记录在同一个事务里落进 audit_outbox（metrics_store.terminal_record_open /
+    terminal_record_close），再推出去；推不出去的后台重试。投递是「至少一次」：推成功了但还没来得及
+    标记就崩溃的话，重启后会再推一遍。
+    """
+
     def __init__(self, post=None):
         self._post = post or requests.post
-        self._lock = threading.Lock()  # 同一条记录别被两个线程同时推两遍
 
-    def record(self, event, cfg):
-        """
-        记一条审计，马上试着推出去；推不出去的留在 outbox 里等后台重试。同一个会话的「打开」「关闭」
-        各只记一次（会话号 + 种类唯一），重复记录直接忽略。投递是「至少一次」：推成功了但还没来得及
-        标记就崩溃的话，重启后会再推一遍。
-        """
-        row_id = metrics_store.outbox_add(f"{event['session']}:{event['kind']}", event, event["at"])
+    def open(self, cfg, session_id, sub, email, host, client_ip, cert_serial, event):
+        """记打开。本地记录失败直接抛——没有审计就不开终端。"""
+        row_id = metrics_store.terminal_record_open(session_id, WORKER_ID, sub, email, host, client_ip,
+                                                    cert_serial, event["at"], event)
         if row_id:
             self.deliver_pending(cfg, only=row_id)
 
-    def deliver_pending(self, cfg, only=None):
-        with self._lock:
-            for row in metrics_store.outbox_pending(OUTBOX_MAX_ATTEMPTS):
-                if only is not None and row["id"] != only:
-                    continue
-                feishu = row["feishu_done"] or self._feishu(row["event"], cfg)
-                slack = row["slack_done"] or self._slack(row["event"], cfg)
-                metrics_store.outbox_mark(row["id"], feishu, slack)
+    def close(self, cfg, event):
+        """记结束。已经被别的进程记过的不再记，返回 False。"""
+        row_id = metrics_store.terminal_record_close(event["session"], event["at"], event.get("bytes_in", 0),
+                                                     event.get("bytes_out", 0), event.get("reason"), event)
+        if row_id:
+            self.deliver_pending(cfg, only=row_id)
+        return row_id is not None
+
+    def deliver_pending(self, cfg, only=None, now=None):
+        for row in metrics_store.outbox_pending(OUTBOX_MAX_ATTEMPTS):
+            if only is not None and row["id"] != only:
+                continue
+            if not metrics_store.outbox_claim(row["id"], time.time() if now is None else now, CLAIM_SECONDS):
+                continue
+            feishu = row["feishu_done"] or self._feishu(row["event"], cfg)
+            slack = row["slack_done"] or self._slack(row["event"], cfg)
+            metrics_store.outbox_mark(row["id"], feishu, slack)
 
     # 没配置的渠道当作已经推过（没有地方可推）；配置了但推失败的返回 False，下次再试
     def _feishu(self, event, cfg):
@@ -411,7 +468,8 @@ class Auditor:
             return True
         title, lines = describe(event)
         try:
-            resp = self._post(webhook, json={"text": f"*{title}*\n" + "\n".join(lines)}, timeout=PUSH_TIMEOUT)
+            resp = self._post(webhook, json={"text": _slack_text(title, lines), "mrkdwn": False},
+                              timeout=PUSH_TIMEOUT)
             return resp.status_code == 200
         except Exception as e:
             print(f"[terminal] 审计推 Slack 失败: {e}")
@@ -419,14 +477,19 @@ class Auditor:
 
 
 def close_unfinished(auditor, cfg, now=None):
-    """启动时调：上次进程退出时还开着的终端补记结束（原因 unknown），并推一条审计。"""
+    """
+    替已经不在的进程补记它们留下的没结束的会话（原因 unknown）。本进程自己的不碰；调用方要等旧进程
+    肯定退出了（gunicorn 的 graceful_timeout 之后）再调，不然会把旧进程还开着的终端提前记成 unknown。
+    一条出错不影响别的。
+    """
     now = time.time() if now is None else now
-    for s in metrics_store.terminal_unfinished():
-        if not metrics_store.terminal_ended(s["id"], now, s["bytes_in"], s["bytes_out"], "unknown"):
-            continue  # 那边刚好自己记了结束，以它为准
-        auditor.record({
-            "kind": "close", "at": now, "session": s["id"], "sub": s["sub"], "email": s["email"],
-            "host": s["host"], "label": s["host"], "address": "", "client_ip": s["client_ip"],
-            "duration": now - s["started_at"], "bytes_in": s["bytes_in"], "bytes_out": s["bytes_out"],
-            "reason": "unknown",
-        }, cfg)
+    for s in metrics_store.terminal_unfinished(exclude_worker=WORKER_ID):
+        try:
+            auditor.close(cfg, {
+                "kind": "close", "at": now, "session": s["id"], "sub": s["sub"], "email": s["email"],
+                "host": s["host"], "label": s["host"], "address": "", "client_ip": s["client_ip"],
+                "duration": now - s["started_at"], "bytes_in": s["bytes_in"], "bytes_out": s["bytes_out"],
+                "reason": "unknown",
+            })
+        except Exception as e:
+            print(f"[terminal] 补记会话 {s['id']} 的结束失败: {e}")

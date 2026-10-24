@@ -897,6 +897,7 @@ const TERMINAL_ERRORS = {
   unavailable:'连不上 Palintropic，过一会儿再试', failed:'验证失败，再开一次',
   origin:'连接来源不对', no_ticket:'这次验证已经用过或者过期了，再开一次',
   too_many_total:'现在开着的终端太多了，过一会儿再试', too_many_mine:'你已经开着 3 个终端了',
+  audit_failed:'审计记录写不进去，所以没有打开终端', connect_failed:'连不上这台机器',
 };
 async function loadTerminalInfo(){
   terminalInfo = terminalInfo || {loading:true};

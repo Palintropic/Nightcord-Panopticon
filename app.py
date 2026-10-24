@@ -12,6 +12,7 @@ import os
 import queue
 import re
 import secrets
+import socket
 import threading
 import time
 from urllib.parse import urlencode, urlsplit
@@ -566,17 +567,22 @@ def _run_terminal(ws, cfg, term, host, entry, session_id):
     started = time.time()
     base = {"session": session_id, "sub": entry["sub"], "email": entry["email"], "name": entry["name"],
             "host": host["id"], "label": host["label"], "address": host["address"], "client_ip": client_ip}
+    # 先记「打开」（连同审计一个事务），记不上就不开：没有审计的终端不给开。推送失败不挡（另有后台重试）
+    try:
+        _auditor.open(cfg, session_id, entry["sub"], entry["email"], host["id"], client_ip, str(serial),
+                      {**base, "kind": "open", "at": started})
+    except Exception as e:
+        print(f"[terminal] 记录打开失败，不开终端: {e}")
+        _ws_last_word(ws, t="error", code="audit_failed")
+        return
+    print(f"[terminal] 打开 {session_id}: {entry['email']} → {host['id']} 来自 {client_ip}")
     transport = chan = None
     reason, bytes_in, bytes_out = "exit", 0, 0
     try:
-        # 先记、先推「打开」，再连：连接本身哪怕出事，审计里也已经有这一次
-        _best_effort("记录打开", metrics_store.terminal_started, session_id, entry["sub"], entry["email"],
-                     host["id"], client_ip, str(serial), started)
-        _best_effort("推送打开", _auditor.record, {**base, "kind": "open", "at": started}, cfg)
-        print(f"[terminal] 打开 {session_id}: {entry['email']} → {host['id']} 来自 {client_ip}")
         transport, chan = terminal.connect(host, key, term["source_address"], cols, rows)
         _ws_send_json(ws, t="ready", host=host["label"])
-        reason, bytes_in, bytes_out = terminal.bridge(ws, chan, ConnectionClosed)
+        reason, bytes_in, bytes_out = terminal.bridge(ws, chan, ConnectionClosed,
+                                                      abort=lambda: ws.sock.shutdown(socket.SHUT_RDWR))
     except terminal.HostKeyMismatch as e:
         print(f"[terminal] 主机指纹不对，没有连: {e}")
         reason = "host_key_mismatch"
@@ -588,9 +594,8 @@ def _run_terminal(ws, cfg, term, host, entry, session_id):
             if closable is not None:
                 _best_effort(name, closable.close)
         ended = time.time()
-        _best_effort("记录结束", metrics_store.terminal_ended, session_id, ended, bytes_in, bytes_out, reason)
-        _best_effort("推送结束", _auditor.record, {**base, "kind": "close", "at": ended, "duration": ended - started,
-                                               "bytes_in": bytes_in, "bytes_out": bytes_out, "reason": reason}, cfg)
+        _best_effort("记录结束", _auditor.close, cfg, {**base, "kind": "close", "at": ended, "duration": ended - started,
+                                                  "bytes_in": bytes_in, "bytes_out": bytes_out, "reason": reason})
         print(f"[terminal] 关闭 {session_id}: {reason}")
         _ws_last_word(ws, t="closed", reason=reason, text=terminal.END_REASONS.get(reason, reason))
 
@@ -1587,8 +1592,12 @@ AUDIT_RETRY_INTERVAL = 60  # 秒
 AUDIT_OUTBOX_KEEP_SECONDS = 30 * 86400  # 推完的审计在本地 outbox 里留 30 天
 
 
+AUDIT_ORPHAN_GRACE = 30  # 秒：比 gunicorn 的 graceful_timeout 长，平滑重启时旧进程的终端那时已经各自记完结束
+
+
 def background_audit_loop():
-    """后台线程：上次没推出去的终端审计，每分钟重试一次。"""
+    """后台线程：上次没推出去的终端审计，每分钟重试一次；先替退出了的旧进程补记它留下的终端。"""
+    time.sleep(AUDIT_ORPHAN_GRACE)
     try:
         terminal.close_unfinished(_auditor, load_config())
     except Exception as e:

@@ -246,7 +246,7 @@ class SshTests(unittest.TestCase):
             self.assertEqual(state["peer"][0], "127.0.0.1")   # bound to the configured source address
             ws = FakeWs([json.dumps({"t": "resize", "cols": 120, "rows": 40}),
                          json.dumps({"t": "in", "d": "ls\n"}), json.dumps({"t": "in", "d": "exit\n"})])
-            reason, bytes_in, bytes_out = terminal.bridge(ws, chan, Closed)
+            reason, bytes_in, bytes_out = terminal.bridge(ws, chan, Closed, abort=lambda: None)
         finally:
             chan.close()
             transport.close()
@@ -275,43 +275,85 @@ class SshTests(unittest.TestCase):
         self.assertIn("主机指纹", str(ctx.exception))
         self.assertEqual(iface.users, [])
 
-    def test_a_browser_that_stops_reading_ends_the_session(self):
-        class Chan:
-            def settimeout(self, t):
-                pass
-
+    def test_a_browser_that_stops_reading_is_cut_loose_and_no_thread_stays(self):
+        class Chan(ScriptedChan):
             def recv(self, n):
                 return b"x" * 1024   # the target never stops talking
 
-            def sendall(self, data):
-                pass
+        released = threading.Event()
 
         class StuckWs(FakeWs):
             def send(self, data):
-                time.sleep(3600)     # the browser never reads
+                if not released.wait(60):   # the browser never reads, until the connection is cut
+                    return
+                raise Closed()
 
+        before = threading.active_count()
         started = time.monotonic()
-        reason, _, _ = terminal.bridge(StuckWs([]), Chan(), Closed)
+        reason, _, _ = terminal.bridge(StuckWs([]), Chan(), Closed, abort=released.set, stall=1)
         self.assertEqual(reason, "slow_browser")
         self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(threading.active_count(), before)   # pump and deliver both exited
+
+    def test_a_large_burst_slows_down_instead_of_being_cut(self):
+        # 3 MB at once, more than the backlog holds, sent by a browser that is slow but keeps reading.
+        chunks = [b"y" * 32768] * 96
+        ws = SlowWs([], delay=0.005)
+        reason, _, bytes_out = terminal.bridge(ws, ScriptedChan(chunks), Closed, abort=lambda: None, stall=2)
+        self.assertEqual(reason, "exit")
+        self.assertEqual(bytes_out, 96 * 32768)
+        self.assertEqual(b"".join(ws.sent), b"".join(chunks))
+
+    def test_output_is_fully_sent_and_counted_before_bridge_returns(self):
+        # 绘名's case: four chunks, 0.6 s each to send, then EOF.
+        ws = SlowWs([], delay=0.6)
+        reason, _, bytes_out = terminal.bridge(ws, ScriptedChan([b"z" * 100] * 4), Closed, abort=lambda: None)
+        sent_at_return = len(ws.sent)
+        time.sleep(0.8)
+        self.assertEqual((reason, bytes_out, sent_at_return, len(ws.sent)), ("exit", 400, 4, 4))
 
     def test_bridge_stops_when_idle_or_the_browser_leaves(self):
-        class Chan:
-            def settimeout(self, t):
-                pass
-
-            def recv(self, n):
-                time.sleep(0.05)
-                raise socket.timeout()
-
-            def sendall(self, data):
-                pass
-
         clock = iter(range(0, 10_000, 600)).__next__
-        reason, _, _ = terminal.bridge(FakeWs([]), Chan(), Closed, clock=clock, idle=900, limit=7200)
+        reason, _, _ = terminal.bridge(FakeWs([]), QuietChan(), Closed, abort=lambda: None, clock=clock,
+                                       idle=900, limit=7200)
         self.assertEqual(reason, "idle")
-        reason, _, _ = terminal.bridge(FakeWs([Closed()]), Chan(), Closed)
+        reason, _, _ = terminal.bridge(FakeWs([Closed()]), QuietChan(), Closed, abort=lambda: None)
         self.assertEqual(reason, "browser_closed")
+
+
+class QuietChan:
+    def settimeout(self, t):
+        pass
+
+    def recv(self, n):
+        time.sleep(0.05)
+        raise socket.timeout()
+
+    def sendall(self, data):
+        pass
+
+    def resize_pty(self, *a):
+        pass
+
+
+class ScriptedChan(QuietChan):
+    """Hands out the given chunks, then EOF."""
+
+    def __init__(self, chunks=()):
+        self.chunks = list(chunks)
+
+    def recv(self, n):
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+class SlowWs(FakeWs):
+    def __init__(self, incoming, delay):
+        super().__init__(incoming)
+        self.delay = delay
+
+    def send(self, data):
+        time.sleep(self.delay)
+        super().send(data)
 
 
 # ---------- audit ----------
@@ -348,18 +390,27 @@ class AuditTests(unittest.TestCase):
             return Resp(200, {"code": 0 if self.feishu_ok else 9499})
         return Resp(200 if self.slack_ok else 500, {})
 
-    def test_both_channels_get_the_event(self):
-        terminal.Auditor(post=self.post).record(self.EVENT, self.CFG)
-        urls = [u for u, _ in self.calls]
-        self.assertEqual(urls, ["https://feishu.example/hook", "https://slack.example/hook"])
-        self.assertIn("a@example.com", self.calls[1][1]["text"])
-        self.assertIn("203.0.113.5", self.calls[1][1]["text"])
+    def open(self, auditor, event=None, session="abcd"):
+        event = {**(event or self.EVENT), "session": session}
+        auditor.open(self.CFG, session, "s", "a@example.com", "tokyo", "203.0.113.5", "1", event)
+
+    def close(self, auditor, session="abcd", at=1_000_600):
+        return auditor.close(self.CFG, {**self.EVENT, "kind": "close", "session": session, "at": at,
+                                        "duration": 600, "bytes_in": 3, "bytes_out": 5, "reason": "exit"})
+
+    def test_both_channels_get_the_event_as_plain_text(self):
+        self.open(terminal.Auditor(post=self.post))
+        (feishu_url, card), (slack_url, slack) = self.calls
+        self.assertEqual((feishu_url, slack_url), ("https://feishu.example/hook", "https://slack.example/hook"))
+        self.assertEqual(card["card"]["body"]["elements"][0]["text"]["tag"], "plain_text")
+        self.assertIs(slack["mrkdwn"], False)
+        self.assertIn("a@example.com", slack["text"])
         self.assertEqual(metrics_store.outbox_pending(terminal.OUTBOX_MAX_ATTEMPTS), [])
 
     def test_a_failed_channel_is_retried_alone(self):
         self.slack_ok = False
         auditor = terminal.Auditor(post=self.post)
-        auditor.record(self.EVENT, self.CFG)
+        self.open(auditor)
         self.assertEqual(len(metrics_store.outbox_pending(terminal.OUTBOX_MAX_ATTEMPTS)), 1)
         self.calls.clear()
         self.slack_ok = True
@@ -367,32 +418,72 @@ class AuditTests(unittest.TestCase):
         self.assertEqual([u for u, _ in self.calls], ["https://slack.example/hook"])   # feishu already done
         self.assertEqual(metrics_store.outbox_pending(terminal.OUTBOX_MAX_ATTEMPTS), [])
 
-    def test_the_same_event_is_recorded_once(self):
+    def test_a_row_another_process_is_pushing_is_left_alone(self):
+        self.slack_ok = False
         auditor = terminal.Auditor(post=self.post)
-        auditor.record(self.EVENT, self.CFG)
-        auditor.record(self.EVENT, self.CFG)
-        self.assertEqual(len(self.calls), 2)   # one feishu + one slack, not four
+        self.open(auditor)
+        row = metrics_store.outbox_pending(terminal.OUTBOX_MAX_ATTEMPTS)[0]
+        self.assertTrue(metrics_store.outbox_claim(row["id"], time.time(), 60))   # the other process
+        self.calls.clear()
+        auditor.deliver_pending(self.CFG)
+        self.assertEqual(self.calls, [])
 
-    def test_names_cannot_inject_markup(self):
-        event = {**self.EVENT, "name": "<at id=all></at>[click](https://evil.example)*x*", "label": "a\nb"}
+    def test_open_and_close_are_recorded_once_and_with_their_session(self):
+        auditor = terminal.Auditor(post=self.post)
+        self.open(auditor)
+        with self.assertRaises(Exception):          # the same session again: refused, not a second audit
+            self.open(auditor)
+        self.assertTrue(self.close(auditor))
+        self.assertFalse(self.close(auditor))        # already closed: nothing recorded or pushed
+        self.assertEqual(len(self.calls), 4)         # open + close, two channels each
+        self.assertEqual(metrics_store.terminal_history()[0]["end_reason"], "exit")
+
+    def test_names_cannot_inject_markup_or_hide_text(self):
+        event = {**self.EVENT, "name": "<at id=all></at>\u202eevil\u200b", "label": "a\nb\u2028c",
+                 "client_ip": "https://evil.example"}
         title, lines = terminal.describe(event)
         text = "\n".join(lines)
-        for bad in ("<at", "](", "[click", "*x*"):
+        for bad in ("\u202e", "\u200b", "\u2028", "a\nb", "https://"):
             self.assertNotIn(bad, text)
-        self.assertNotIn("a\nb", text)
+        slack = terminal._slack_text(title, lines)
+        self.assertNotIn("<at", slack)
+        self.assertIn("&lt;at id=all&gt;", slack)
 
     def test_done_records_are_pruned_later(self):
-        terminal.Auditor(post=self.post).record(self.EVENT, self.CFG)
+        self.open(terminal.Auditor(post=self.post))
         metrics_store.outbox_prune(self.EVENT["at"] + 1)
         with metrics_store._connect() as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_outbox").fetchone()[0], 0)
 
-    def test_sessions_left_open_by_a_crash_are_closed_as_unknown(self):
-        metrics_store.terminal_started("abcd", "s", "a@example.com", "tokyo", "203.0.113.5", "1", 1_000_000)
-        terminal.close_unfinished(terminal.Auditor(post=self.post), self.CFG, now=1_000_600)
-        self.assertEqual(metrics_store.terminal_unfinished(), [])
-        self.assertEqual(metrics_store.terminal_history()[0]["end_reason"], "unknown")
+    def test_sessions_left_by_another_process_are_closed_as_unknown_but_not_our_own(self):
+        auditor = terminal.Auditor(post=self.post)
+        metrics_store.terminal_record_open("theirs", "old-worker", "s", "a@example.com", "tokyo", "203.0.113.5",
+                                           "1", 1_000_000, {**self.EVENT, "session": "theirs"})
+        self.open(auditor, session="ours")
+        terminal.close_unfinished(auditor, self.CFG, now=1_000_600)
+        open_ids = [s["id"] for s in metrics_store.terminal_unfinished()]
+        self.assertEqual(open_ids, ["ours"])
+        self.assertEqual(next(s for s in metrics_store.terminal_history() if s["id"] == "theirs")["end_reason"],
+                         "unknown")
         self.assertIn("结束时间不确定", self.calls[-1][1]["text"])
+
+    def test_an_old_outbox_table_is_migrated(self):
+        with metrics_store._connect() as conn:
+            conn.executescript("""
+                DROP TABLE audit_outbox; DROP TABLE terminal_sessions;
+                CREATE TABLE terminal_sessions (id TEXT PRIMARY KEY, sub TEXT NOT NULL, email TEXT, host TEXT NOT NULL,
+                  client_ip TEXT, cert_serial TEXT, started_at INTEGER NOT NULL, ended_at INTEGER,
+                  bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0, end_reason TEXT);
+                CREATE TABLE audit_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,
+                  event_json TEXT NOT NULL, feishu_done INTEGER NOT NULL DEFAULT 0,
+                  slack_done INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0);
+                INSERT INTO audit_outbox (created_at, event_json) VALUES (1, '{}'), (2, '{}');
+            """)
+        metrics_store.init_db()
+        self.open(terminal.Auditor(post=self.post))
+        with metrics_store._connect() as conn:
+            ids = [r[0] for r in conn.execute("SELECT event_id FROM audit_outbox ORDER BY id")]
+        self.assertEqual(ids, ["legacy:1", "legacy:2", "abcd:open"])
 
 
 # ---------- the step-up round trip through SSO ----------
@@ -513,8 +604,9 @@ class StepUpTests(SsoTestCase):
         self.assertEqual(self.get("/api/status").status_code, 200)
 
     def test_history_is_own_for_admins(self):
-        metrics_store.terminal_started("a1", "user-1", "airi@example.com", "tokyo", "1.2.3.4", "1", time.time())
-        metrics_store.terminal_started("b1", "other", "x@example.com", "tokyo", "1.2.3.4", "1", time.time())
+        for sid, sub in (("a1", "user-1"), ("b1", "other")):
+            metrics_store.terminal_record_open(sid, "w", sub, f"{sub}@example.com", "tokyo", "1.2.3.4", "1",
+                                               time.time(), {"session": sid, "kind": "open"})
         _, q = self.step_up()
         self.finish(q)   # session role is now admin
         ids = [s["id"] for s in self.get("/api/terminal/history").get_json()["sessions"]]
