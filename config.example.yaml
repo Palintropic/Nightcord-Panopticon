@@ -55,6 +55,25 @@ sso:
   # Palintropic 的会话还在的话，重新授权不用再输密码。
   session_minutes: 60
 
+# 网页终端（看板「终端」页）：在浏览器里开机器的 SSH 终端。只有用 Palintropic 账户登录的人能开，
+# 每次打开都要在 Palintropic 用 Passkey 重新验证；能开哪几台由 Palintropic 的 ssh_hosts 分配，
+# 这里的机器名（tokyo / shanghai / home）要跟那边一致。
+# 登目标机用 Panopticon 现签的 5 分钟 SSH 证书（CA 私钥是同目录的 terminal_ca 文件，第一次用时生成）。
+# 每台目标机要做一次：把 `python terminal_ca.py pubkey` 打印的 CA 公钥交给
+#   sudo bash deploy/terminal-host-setup.sh mizuki "<CA 公钥>"
+# 它最后打印的主机公钥填到下面的 host_key（钉死，对不上就不连）。
+# 每次打开 / 关闭终端都推到飞书（用上面 notifications.feishu）和 slack_webhook。
+terminal:
+  enabled: false
+  source_address: 10.10.0.1     # Panopticon 自己的 WireGuard 地址；连接从这里出发，证书也只认这个来源
+  slack_webhook: ""             # Slack incoming webhook，不填就不推 Slack
+  hosts:
+    tokyo:
+      label: 东京
+      address: 10.10.0.3
+      user: mizuki
+      host_key: "ssh-ed25519 AAAA...（terminal-host-setup.sh 打印的那行）"
+
 # 自建监控 agent（agent/metrics_agent.py，跑在各台服务器上）上报系统指标历史的接收端配置。
 # agent 侧的 agent_config.yaml 里 shared_secret 要跟这里填的一致。
 metrics_agent:

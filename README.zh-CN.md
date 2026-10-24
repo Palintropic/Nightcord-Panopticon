@@ -33,6 +33,7 @@ vSphere API 把 ESXi 宿主机的指标接进同一套流水线，不用在 ESXi
 - `notifier.py`：阈值判断 + 边缘触发的飞书/邮件告警（问题刚发生时发一次，不会每轮巡检都重发），解除时发恢复通知。
 - `webauthn_manager.py` + `static/login.html`：session 登录，密码之外还支持 Passkey（WebAuthn）。
 - `sso.py`：用 Palintropic 账户登录（OIDC），按账户档位分超级管理员 / 一般管理员。
+- `terminal.py` + `terminal_ca.py`：网页终端（WebSocket ⇄ SSH），短期 SSH 证书、一次性票、审计推送。
 
 通用配置指南（不绑定具体服务器）见 [SETUP.zh-CN.md](SETUP.zh-CN.md)；一份具体案例（含 WireGuard 组网、systemd、Nginx+HTTPS）见 [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md)。
 
@@ -76,7 +77,7 @@ python app.py
 ## 安全提示
 
 - `config.yaml` 里是明文密钥，注意权限控制，不要提交到公开代码仓库（本仓库已通过 `.gitignore` 排除）。
-- 生产环境不要用 Flask 自带的开发服务器，可用 `gunicorn app:app` 或反向代理。
+- 生产环境不要用 Flask 自带的开发服务器，用 `gunicorn -c gunicorn.conf.py app:app`（单 worker 多线程），前面放反向代理。
 
 ### 推荐架构：agent 走 WireGuard 上报
 
@@ -146,6 +147,23 @@ dashboard_auth:
 - 本地密码 / Passkey 登进来就是超级管理员（SSO 连不上时只有站长自己能进）；开了 SSO 时这种会话 12 小时过期。
 
 client 在 Palintropic 那边用 `bin/palid client` 建，`redirect_uri` 要跟那边登记的一字不差。
+
+### 网页终端
+
+看板「终端」页可以在浏览器里开机器的 SSH 终端，配置见 `config.example.yaml` 的 `terminal` 段。
+
+- 只有用 Palintropic 账户登录的人能开（本地应急登录不行）；**每次打开**都回 Palintropic 重新验证，
+  而且这一次必须用 Passkey（看 ID token `amr` 的最后一项、`auth_time` 不早于发起时刻）。能开哪几台
+  看这张新 token 里的 `ssh_hosts`，在 SSO 撤掉后下一次打开立刻被拒。
+- 验过之后发一张一次性票（绑定看板会话、账户和机器，60 秒），WebSocket 握手时用掉；握手还校验 Origin。
+- 登目标机用现签的短期证书：5 分钟有效、只给 `mizuki` 这类配置的账户、只认 Panopticon 的
+  WireGuard 地址、只有 `permit-pty`（没有端口 / agent / X11 转发）。目标机只需
+  `deploy/terminal-host-setup.sh` 配一次，不留长期钥匙。主机指纹钉在配置里，对不上就不连；
+  一键部署 agent 碰到钉过指纹的机器也会先核对再发密码。
+- 空闲 15 分钟断开，单次最长 2 小时，每人同时最多 3 个、全站最多 8 个。
+- 每次打开 / 关闭都推到飞书和 Slack（推不出去的后台重试，进程重启时补记还开着的会话）。本机数据库
+  里的记录能被开到这台机器的终端改掉，外部推送才是正本。不录屏、不录按键。
+- 需要 WebSocket，所以生产用 `gunicorn -c gunicorn.conf.py app:app`。
 
 ## 可扩展方向
 

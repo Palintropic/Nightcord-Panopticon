@@ -36,6 +36,7 @@ Browser <-- HTTP --> Flask backend (app.py)
 - `notifier.py`: threshold evaluation + edge-triggered Feishu/email alerts (fires once when a problem starts, not on every check cycle), with a recovery notice when it clears.
 - `webauthn_manager.py` + `static/login.html`: session-based login with optional Passkey (WebAuthn) support alongside the password.
 - `sso.py`: sign-in with a Palintropic account (OIDC), with the account's tier deciding superadmin or general admin.
+- `terminal.py` + `terminal_ca.py`: the web terminal (WebSocket ⇄ SSH) with short-lived SSH certificates, one-time tickets and audit pushes.
 
 General setup guide (not tied to a specific server) at [SETUP.md](SETUP.md); a worked example (WireGuard mesh, systemd, Nginx+HTTPS) at [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese only, commands are still copy-pasteable).
 
@@ -82,7 +83,7 @@ for why. A machine shows up on the dashboard after its first report.
 ## Security notes
 
 - `config.yaml` holds plaintext secrets — keep it out of public repos (already excluded via `.gitignore`).
-- Don't run Flask's dev server in production; use `gunicorn app:app` behind a reverse proxy instead.
+- Don't run Flask's dev server in production; use `gunicorn -c gunicorn.conf.py app:app` (one worker, threads) behind a reverse proxy instead.
 
 ### Recommended architecture: agents report over WireGuard
 
@@ -167,6 +168,27 @@ leads with "用 Palintropic 账户登录", and the local password / Passkey beco
 
 Create the client on the Palintropic side with `bin/palid client`; `redirect_uri` must match what is
 registered there exactly.
+
+### Web terminal
+
+The dashboard's 终端 page opens an SSH terminal to a machine in the browser; see the `terminal` section of
+`config.example.yaml`.
+
+- Only Palintropic sign-ins can open one (not the local emergency login), and **every opening** goes back
+  to Palintropic to verify again, with a passkey this time (the last entry of the ID token's `amr`, and an
+  `auth_time` no earlier than the request). The machines come from that fresh token's `ssh_hosts`, so a
+  host taken away in SSO is refused at the next opening.
+- That yields a one-time ticket (bound to the dashboard session, the account and the machine, 60 s) used up
+  by the WebSocket handshake, which also checks Origin.
+- Logins use a freshly signed short-lived certificate: valid 5 minutes, for the configured account only,
+  only from Panopticon's WireGuard address, with `permit-pty` only (no port, agent or X11 forwarding). Each
+  target needs `deploy/terminal-host-setup.sh` once and keeps no long-lived key. Host keys are pinned in
+  the config; the one-click agent deploy also checks a pinned key before sending a password.
+- Idle disconnect after 15 minutes, 2 hours at most, 3 per person and 8 in total at a time.
+- Every opening and closing is pushed to Feishu and Slack (retried in the background, and sessions left
+  open by a restart are closed as unknown). The local database can be edited from a terminal on that
+  machine, so the pushed copy is the record. No screen or keystroke recording.
+- WebSockets need `gunicorn -c gunicorn.conf.py app:app` in production.
 
 ## Ideas for extension
 

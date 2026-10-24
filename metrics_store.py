@@ -67,6 +67,32 @@ CREATE TABLE IF NOT EXISTS status_push (
   received_at INTEGER NOT NULL,
   body_json TEXT NOT NULL
 );
+
+-- 网页终端的每一次连接。ended_at 为空 = 还开着（或者进程崩溃时没来得及记结束，重启时补成 unknown）。
+-- 这里的记录能被开到上海本机的终端改掉，所以审计的正本是推到飞书 / Slack 的那份（见 audit_outbox）。
+CREATE TABLE IF NOT EXISTS terminal_sessions (
+  id TEXT PRIMARY KEY,
+  sub TEXT NOT NULL,
+  email TEXT,
+  host TEXT NOT NULL,
+  client_ip TEXT,
+  cert_serial TEXT,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  bytes_in INTEGER NOT NULL DEFAULT 0,
+  bytes_out INTEGER NOT NULL DEFAULT 0,
+  end_reason TEXT
+);
+
+-- 要推出去的审计消息。每个渠道各记一个完成标记，没推成的由后台重试，进程重启也不丢。
+CREATE TABLE IF NOT EXISTS audit_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at INTEGER NOT NULL,
+  event_json TEXT NOT NULL,
+  feishu_done INTEGER NOT NULL DEFAULT 0,
+  slack_done INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -328,3 +354,63 @@ def get_status_push(source):
     if row is None:
         return None
     return row["received_at"], json.loads(row["body_json"])
+
+
+def terminal_started(session_id, sub, email, host, client_ip, cert_serial, started_at):
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO terminal_sessions (id, sub, email, host, client_ip, cert_serial, started_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, sub, email, host, client_ip, cert_serial, int(started_at)),
+        )
+
+
+def terminal_ended(session_id, ended_at, bytes_in, bytes_out, reason):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE terminal_sessions SET ended_at=?, bytes_in=?, bytes_out=?, end_reason=?"
+            " WHERE id=? AND ended_at IS NULL",
+            (int(ended_at), int(bytes_in), int(bytes_out), reason, session_id),
+        )
+
+
+def terminal_unfinished():
+    """没有记结束的会话（进程崩溃或重启时还开着的）。"""
+    with _connect() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM terminal_sessions WHERE ended_at IS NULL")]
+
+
+def terminal_history(sub=None, limit=100):
+    """最近的终端记录；给了 sub 就只看这个人的。"""
+    with _connect() as conn:
+        if sub is None:
+            rows = conn.execute("SELECT * FROM terminal_sessions ORDER BY started_at DESC LIMIT ?", (limit,))
+        else:
+            rows = conn.execute("SELECT * FROM terminal_sessions WHERE sub=? ORDER BY started_at DESC LIMIT ?",
+                                (sub, limit))
+        return [dict(r) for r in rows]
+
+
+def outbox_add(event, created_at):
+    with _connect() as conn:
+        cur = conn.execute("INSERT INTO audit_outbox (created_at, event_json) VALUES (?, ?)",
+                           (int(created_at), json.dumps(event, ensure_ascii=False)))
+        return cur.lastrowid
+
+
+def outbox_pending(max_attempts):
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM audit_outbox WHERE (feishu_done=0 OR slack_done=0) AND attempts < ? ORDER BY id",
+            (max_attempts,),
+        )
+        return [{**dict(r), "event": json.loads(r["event_json"])} for r in rows]
+
+
+def outbox_mark(row_id, feishu_done, slack_done):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE audit_outbox SET feishu_done=MAX(feishu_done, ?), slack_done=MAX(slack_done, ?),"
+            " attempts=attempts+1 WHERE id=?",
+            (int(feishu_done), int(slack_done), row_id),
+        )

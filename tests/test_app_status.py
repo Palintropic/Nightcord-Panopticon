@@ -182,7 +182,8 @@ class DeployTests(AppTestCase):
                                              "report_url": "http://10.0.0.1:1810"}})
         calls = []
 
-        def fake_deploy(ip, port, ssh_user, password, report_url, shared_secret, log=None, panel_name_override=None):
+        def fake_deploy(ip, port, ssh_user, password, report_url, shared_secret, log=None, panel_name_override=None,
+                        pinned_host_key=None):
             calls.append((ip, report_url, shared_secret))
             return {"ok": True, "panel_name": "new-host"}
 

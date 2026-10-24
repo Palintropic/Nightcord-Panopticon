@@ -127,6 +127,22 @@
   .preset .chips i{width:20px;height:20px}
 
   @media (prefers-reduced-motion: reduce){ .tile-inner{transition:none} }
+
+  /* 终端: the list is ordinary content; an open terminal gets its own view that redraws never touch. */
+  .notice.warn{color:var(--warn)}
+  .term-hosts{margin:var(--gutter) calc(-1 * var(--page-margin)) 0}
+  .term-host{display:flex;align-items:center;gap:var(--gutter);min-height:var(--list-item-min-height);padding:4px var(--page-margin)}
+  .term-host .th-name{flex:1;min-width:0;font:var(--type-body)}
+  .term-history{width:100%;border-collapse:collapse;margin-top:8px;font:var(--type-caption)}
+  .term-history th{text-align:left;font-weight:normal;color:var(--SystemBaseMedium);padding:4px 8px 4px 0}
+  .term-history td{padding:4px 8px 4px 0;vertical-align:top}
+  #terminalView{display:flex;flex-direction:column;padding-bottom:var(--gutter)}
+  #terminalView[hidden]{display:none}
+  .term-bar{display:flex;align-items:center;gap:var(--gutter);padding:8px 0}
+  .term-bar .tb-title{font:var(--type-body)}
+  .term-bar .tb-state{flex:1;min-width:0;color:var(--SystemBaseMedium);font:var(--type-caption)}
+  .term-bar .tb-state.warn{color:var(--warn)}
+  .term-box{flex:1;min-height:240px;background:#000000;padding:4px}
 </style>
 </head>
 <body>
@@ -139,6 +155,14 @@
     <nav class="pivot-headers" id="pivotHeaders" role="tablist"></nav>
   </header>
   <main class="content" id="content"></main>
+  <main class="content" id="terminalView" hidden>
+    <div class="term-bar">
+      <span class="tb-title" id="termTitle"></span>
+      <span class="tb-state" id="termState"></span>
+      <button class="btn" id="termClose">断开</button>
+    </div>
+    <div class="term-box" id="termBox"></div>
+  </main>
   <main class="content" id="settingsView" hidden>
 
     <!-- 主题 -->
@@ -435,15 +459,14 @@ const TOP_PIVOTS = [
   {label:'告警', render:() => reserved('告警历史',
     '现在告警发出去就没了，看板上翻不到。这一页以后会按时间列出每条告警和它的恢复，能看出某台机器昨晚几点出过什么事、持续了多久。',
     '需要先把告警记录写进数据库。')},
-  {label:'终端', render:() => reserved('网页终端（SSH）',
-    '在浏览器里直接连到机器的终端。打开前要重新验证一次 Passkey，能连哪几台机器由 Palintropic SSO 分配，每次连接都会记进审计日志。',
-    '等 SSO 上线后开放。')},
+  {label:'终端', render:() => terminalPage()},
   {label:'文件', render:() => reserved('文件管理',
     '浏览、上传、下载、在线编辑机器上的文件。跟终端走同一扇门：同一条 SSH 连接上的 SFTP，同样由 SSO 授权、同样记审计。',
-    '等 SSO 上线后开放，和终端一起做。')},
+    '下一步做：跟终端共用重新验证、证书和审计。')},
   {label:'设置', render:() => settingsList()},
 ];
 const SETTINGS_PIVOT = 5;
+const TERMINAL_PIVOT = 3;
 // The forms live in #settingsView (static markup, driven by /static/settings.js) so a refresh
 // redraw never wipes what is being typed.
 const SETTINGS_PAGES = [
@@ -536,8 +559,11 @@ function render(animate){
   const headers = document.getElementById('pivotHeaders');
   const content = document.getElementById('content');
   const settingsView = document.getElementById('settingsView');
-  content.hidden = r.view === 'settings';
+  const showTerminal = r.view === 'list' && r.pivot === TERMINAL_PIVOT && !!termSession;
+  content.hidden = r.view === 'settings' || showTerminal;
   settingsView.hidden = r.view !== 'settings';
+  document.getElementById('terminalView').hidden = !showTerminal;
+  if(showTerminal && termSession.fit) requestAnimationFrame(() => termSession && termSession.fit.fit());
   if(r.view === 'settings'){
     const pg = SETTINGS_PAGES.find(x => x.key === r.page);
     back.hidden = false;
@@ -578,6 +604,7 @@ function render(animate){
     headers.innerHTML = (publicView ? TOP_PIVOTS.slice(0, 1) : TOP_PIVOTS).map((pv, i) =>
       `<button class="pivot-header-item" role="tab" aria-selected="${i === r.pivot}" data-pivot="${i}">${pv.label}</button>`).join('');
     html = TOP_PIVOTS[r.pivot].render();
+    if(r.pivot === TERMINAL_PIVOT && !terminalInfo && !publicView) loadTerminalInfo();
     if(r.pivot === SETTINGS_PIVOT && isSuperadmin() && window.panopticonSettings) window.panopticonSettings.ensureLoaded();
   }
   content.innerHTML = `<div${animate && !reduceMotion.matches ? ' class="entering"' : ''}>${html}</div>`;
@@ -854,6 +881,133 @@ function tile(p){
     </div>
   </a>`;
 }
+
+// ---------- terminal ----------
+// Opening one: POST /auth/terminal → Palintropic asks for the passkey again → back here at #p=3
+// with a one-time ticket in the session, which /api/terminal/hosts reports as `pending`; the
+// terminal then connects by itself. The server checks everything again on the WebSocket.
+let terminalInfo = null;      // /api/terminal/hosts + /api/terminal/history
+let termSession = null;       // {term, fit, ws, label, closed}
+const TERMINAL_ERRORS = {
+  unknown_host:'这台机器不在终端清单里', local_session:'本地应急登录开不了终端，请用 Palintropic 账户登录',
+  mismatch:'验证的账户跟现在登录的不是同一个', not_passkey:'开终端要用 Passkey 验证，用密码不行',
+  stale:'验证不是刚刚做的，再开一次', host_denied:'这台机器没有分给你',
+  cancelled:'在 Palintropic 那边取消了验证', expired:'验证等太久或者被打断了，再开一次',
+  denied:'这个账户没有 Panopticon 的权限', no_roles:'Palintropic 没有发来权限信息',
+  unavailable:'连不上 Palintropic，过一会儿再试', failed:'验证失败，再开一次',
+  origin:'连接来源不对', no_ticket:'这次验证已经用过或者过期了，再开一次',
+  too_many_total:'现在开着的终端太多了，过一会儿再试', too_many_mine:'你已经开着 3 个终端了',
+};
+async function loadTerminalInfo(){
+  terminalInfo = terminalInfo || {loading:true};
+  try{
+    const [hosts, history] = await Promise.all([
+      fetchJsonWithTimeout('/api/terminal/hosts', 10000), fetchJsonWithTimeout('/api/terminal/history', 10000)]);
+    terminalInfo = {...(hosts.ok ? hosts.data : {enabled:false}), history:history.ok ? history.data.sessions : []};
+  }catch(e){ terminalInfo = {failed:true}; }
+  if(terminalInfo.pending && !termSession){
+    const h = (terminalInfo.hosts || []).find(x => x.id === terminalInfo.pending);
+    openTerminal(h ? h.label : terminalInfo.pending);
+  }
+  const r = route();
+  if(r.view === 'list' && r.pivot === TERMINAL_PIVOT) render(false);
+}
+function terminalPage(){
+  const info = terminalInfo;
+  if(!info || info.loading) return '<div class="empty-hint">加载中…</div>';
+  if(info.failed) return '<div class="empty-hint">读取终端信息失败，刷新页面再试。</div>';
+  if(!info.enabled) return reserved('网页终端（SSH）', '在浏览器里直接连到机器的终端。', '还没在 config.yaml 里开启 terminal 段。');
+  let html = info.error ? `<div class="notice warn">${escapeHtml(TERMINAL_ERRORS[info.error] || '没能打开终端：' + info.error)}</div>` : '';
+  html += '<div class="description" style="margin-top:var(--gutter)">每次打开都要在 Palintropic 用 Passkey 重新验证一次；能开哪几台由 Palintropic 分配。每次打开和关闭都会推到飞书和 Slack。</div>';
+  if(!info.can_open) html += `<div class="notice">${escapeHtml(TERMINAL_ERRORS.local_session)}</div>`;
+  html += `<div class="term-hosts">${(info.hosts || []).map(h => `<div class="term-host">
+      <span class="th-name">${escapeHtml(h.label)} <span class="caption">${escapeHtml(h.id)}</span></span>
+      <button class="btn" data-terminal-host="${escapeAttr(h.id)}"${info.can_open ? '' : ' disabled'}>打开终端</button></div>`).join('')}</div>`;
+  const rows = (info.history || []).slice(0, 20);
+  if(rows.length){
+    const when = ts => new Date(ts * 1000).toLocaleString();
+    const length = s => s.ended_at ? `${Math.max(0, Math.round((s.ended_at - s.started_at) / 60))} 分钟` : '进行中';
+    html += `<div class="group"><div class="group-header">最近的连接</div><table class="term-history">
+      <tr><th>开始</th><th>谁</th><th>哪台</th><th>多久</th><th>怎么结束的</th></tr>
+      ${rows.map(s => `<tr><td>${escapeHtml(when(s.started_at))}</td><td>${escapeHtml(s.email || '')}</td>
+        <td>${escapeHtml(s.host)}</td><td>${escapeHtml(length(s))}</td><td>${escapeHtml(s.end_reason || '')}</td></tr>`).join('')}
+      </table></div>`;
+  }
+  return html;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-terminal-host]');
+  if(!b) return;
+  const f = document.createElement('form');
+  f.method = 'POST'; f.action = '/auth/terminal';
+  const i = document.createElement('input');
+  i.type = 'hidden'; i.name = 'host'; i.value = b.dataset.terminalHost;
+  f.appendChild(i); document.body.appendChild(f); f.submit();
+});
+// xterm.js is only fetched when a terminal opens.
+let xtermLoading = null;
+function loadXterm(){
+  if(xtermLoading) return xtermLoading;
+  const css = document.createElement('link');
+  css.rel = 'stylesheet'; css.href = '/static/vendor/xterm/xterm.css';
+  document.head.appendChild(css);
+  const script = src => new Promise((ok, fail) => {
+    const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s);
+  });
+  xtermLoading = script('/static/vendor/xterm/xterm.js').then(() => script('/static/vendor/xterm/addon-fit.js'));
+  return xtermLoading;
+}
+function termStatus(text, warn){
+  const el = document.getElementById('termState');
+  el.textContent = text; el.className = 'tb-state' + (warn ? ' warn' : '');
+}
+async function openTerminal(label){
+  termSession = {label, closed:false};
+  document.getElementById('termTitle').textContent = label;
+  document.getElementById('termClose').textContent = '断开';
+  termStatus('连接中…');
+  if(route().pivot !== TERMINAL_PIVOT) location.hash = '#p=' + TERMINAL_PIVOT;
+  render(false);
+  try{ await loadXterm(); }
+  catch(e){ termStatus('终端组件加载失败，刷新页面再试', true); termSession.closed = true; return; }
+  const session = termSession;
+  const term = new Terminal({cursorBlink:true, fontSize:14, scrollback:5000,
+    fontFamily:'"Cascadia Mono", Consolas, Menlo, monospace', theme:{background:'#000000'}});
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById('termBox'));
+  fit.fit();
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/terminal/ws');
+  ws.binaryType = 'arraybuffer';
+  Object.assign(session, {term, fit, ws});
+  const send = msg => { if(ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
+  ws.onopen = () => send({t:'size', cols:term.cols, rows:term.rows});
+  ws.onmessage = e => {
+    if(typeof e.data !== 'string'){ term.write(new Uint8Array(e.data)); return; }
+    let m = {};
+    try{ m = JSON.parse(e.data); }catch(err){ return; }
+    if(m.t === 'ready'){ termStatus('已连接'); term.focus(); }
+    if(m.t === 'error') termStatus(TERMINAL_ERRORS[m.code] || '没能打开终端：' + m.code, true);
+    if(m.t === 'closed') termStatus('已断开：' + (m.text || m.reason), m.reason !== 'exit' && m.reason !== 'browser_closed');
+    if(m.t === 'error' || m.t === 'closed') ws.close();   // the server's last word; let it go
+  };
+  ws.onclose = () => {
+    session.closed = true;
+    if(document.getElementById('termState').textContent.startsWith('连接中') || document.getElementById('termState').textContent === '已连接') termStatus('已断开');
+    document.getElementById('termClose').textContent = '返回列表';
+  };
+  term.onData(d => send({t:'in', d}));
+  term.onResize(({cols, rows}) => send({t:'resize', cols, rows}));
+}
+document.getElementById('termClose').addEventListener('click', () => {
+  if(!termSession) return;
+  if(!termSession.closed && termSession.ws){ termSession.ws.close(); return; }
+  if(termSession.term) termSession.term.dispose();
+  termSession = null;
+  terminalInfo = null;   // the history has a new line
+  render(false);
+});
+window.addEventListener('resize', () => { if(termSession && termSession.fit) termSession.fit.fit(); });
 
 // Same tile from a /api/public/status card; not a link, as there is no detail to open.
 function publicTile(p){

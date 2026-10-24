@@ -95,8 +95,8 @@ python gen_password_hash.py "你的密码"
 不要用 `python app.py` 长期跑在前台，参考：
 
 ```bash
-pip install gunicorn
-gunicorn -w 2 -b 0.0.0.0:1810 app:app
+pip install -r requirements.txt   # 已经包含 gunicorn
+gunicorn -c gunicorn.conf.py app:app
 ```
 
 监听 `0.0.0.0` 是为了让 agent 能从 WireGuard 连进来；1810 端口防火墙只放行 WireGuard 网卡
@@ -105,9 +105,8 @@ gunicorn -w 2 -b 0.0.0.0:1810 app:app
 用 systemd 管理进程、Nginx 反代 + Let's Encrypt 签 HTTPS 的完整示例配置见
 [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) 第二步。
 
-> 注意：Gunicorn 只提供 HTTP 服务。要同时使用 Gunicorn 和告警功能，请另起一个 `python worker.py`
-> 服务；它只跑巡检任务，不会再绑定 HTTP 端口。
-> （细节同样在 DEPLOY.zh-CN.md 里）。
+> `gunicorn.conf.py` 固定只开一个 worker 进程（多线程）：网页终端的一次性票、远程数据缓存、登录防爆破
+> 计数都在进程内存里。告警巡检、历史清理、终端审计重试这几个后台线程也由它在 worker 里启动，不用另跑 `worker.py`。
 
 ## 常见问题
 

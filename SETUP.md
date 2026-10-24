@@ -86,15 +86,15 @@ Supports a Feishu custom-bot webhook and SMTP email, both configurable from Sett
 Don't leave `python app.py` running in a foreground terminal long-term:
 
 ```bash
-pip install gunicorn
-gunicorn -w 2 -b 0.0.0.0:1810 app:app
+pip install -r requirements.txt   # includes gunicorn
+gunicorn -c gunicorn.conf.py app:app
 ```
 
 Listening on `0.0.0.0` lets agents reach it over WireGuard; keep port 1810 firewalled to the WireGuard interface (`ufw allow in on wg0 to any port 1810 proto tcp`) and closed to the public.
 
 A full example with systemd process management and Nginx + Let's Encrypt HTTPS is in step 2 of [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese, but the commands are copy-pasteable).
 
-> Note: Gunicorn only serves HTTP. If you want both Gunicorn and alerting, run `python worker.py` as a second service; it runs the periodic jobs without binding another HTTP port (also covered in DEPLOY.zh-CN.md).
+> `gunicorn.conf.py` runs exactly one worker process (with threads): the web terminal's one-time tickets, the remote-data cache and the login lockout counters live in process memory. It also starts the alert, pruning and terminal-audit threads inside that worker, so no separate `worker.py` is needed.
 
 ## FAQ
 
