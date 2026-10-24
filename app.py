@@ -549,6 +549,7 @@ def _best_effort(what, fn, *args, **kwargs):
 
 
 def _run_terminal(ws, cfg, term, host, entry, session_id):
+    terminal.no_delay(getattr(ws, "sock", None))     # 回东京反代的那条连接，回显同样是小包
     try:
         first = json.loads(ws.receive(timeout=5) or "{}")
     except (ValueError, TypeError, ConnectionClosed):
