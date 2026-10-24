@@ -111,11 +111,13 @@ class Provider:
             self._discovery[issuer] = (time.time(), doc)
         return doc
 
+    # 只缓存整份 JWKS（lifespan 到期重拉；遇到不认识的 kid 也会当场重拉），不按 kid 另存一份：
+    # PyJWT 的按 kid 缓存没有过期时间，SSO 那边撤掉的公钥会一直被认到进程重启
     def signing_key(self, jwks_uri, token):
         with self._lock:
             client = self._jwks.get(jwks_uri)
             if client is None:
-                client = self._jwks[jwks_uri] = jwt.PyJWKClient(jwks_uri, cache_keys=True, lifespan=DISCOVERY_TTL,
+                client = self._jwks[jwks_uri] = jwt.PyJWKClient(jwks_uri, cache_keys=False, lifespan=DISCOVERY_TTL,
                                                                 timeout=HTTP_TIMEOUT)
         try:
             return client.get_signing_key_from_jwt(token).key

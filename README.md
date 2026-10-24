@@ -154,13 +154,13 @@ leads with "用 Palintropic 账户登录", and the local password / Passkey beco
 - After `session_minutes` (default 60) the dashboard goes back to SSO on its own, which looks the tier up
   again, so a revoked tier takes effect within that time. A live Palintropic session makes this silent.
 - Signing out also signs out of Palintropic (needs `post_logout_redirect_uri` and SSO being reachable at the
-  time; otherwise only the dashboard session ends).
+  time; otherwise only the dashboard session ends, and the login page says so).
 - The issuer must be https (localhost excepted) and every discovery address must share its origin, so the
   client secret is never sent anywhere else.
 - Only one callback address is registered. Starting the account sign-in from another address (e.g. the
   WireGuard IP) first moves to the callback's host.
-- The local password / Passkey sign in as superadmin (when SSO is unreachable only the site owner gets in),
-  for 12 hours.
+- The local password / Passkey sign in as superadmin (when SSO is unreachable only the site owner gets in);
+  with SSO on, such a session ends after 12 hours.
 
 Create the client on the Palintropic side with `bin/palid client`; `redirect_uri` must match what is
 registered there exactly.

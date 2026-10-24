@@ -41,9 +41,14 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 class _SessionInterface(SecureCookieSessionInterface):
     # 经 HTTPS 访问（包括受信反代转来的，见 auth.ForwardedProto）时 session cookie 带 Secure，
-    # 不会再从同一个域名的 http 地址发出去；WireGuard 内网直连的 http 照常能登录
+    # 不会再从同一个域名的 http 地址发出去；WireGuard 内网直连的 http 照常能登录。
+    # 访问的是 SSO 回调所在的 https 域名时也一律带上：反代漏配 trusted_proxies 认不出 https 时不至于漏
     def get_cookie_secure(self, app):
-        return request.is_secure
+        if request.is_secure:
+            return True
+        settings = _sso_settings()
+        return bool(settings) and settings["redirect_uri"].startswith("https://") \
+            and request.host == urlsplit(settings["redirect_uri"]).netloc
 
 
 app.session_interface = _SessionInterface()
@@ -162,6 +167,9 @@ def enforce_auth():
         cfg = load_config()
     except RuntimeError:
         return  # 还没配置 config.yaml，让后续逻辑走正常的报错路径
+    if not cfg and request.endpoint != "static":
+        # 文件在、内容却是空的（被清空、写坏）：不能当成首次运行把看板敞开
+        return jsonify({"error": "config.yaml 是空的，先修好配置"}), 503
     if not _login_required(cfg):
         return
 
@@ -200,11 +208,15 @@ def _session_role():
 
 
 def _sign_in_locally():
-    """本地密码 / Passkey 登录：SSO 挂了时的应急入口，只有站长自己有，所以直接是超管。"""
+    """
+    本地密码 / Passkey 登录，直接是超管：开了 SSO 时它是 SSO 挂了时的应急入口，只有站长自己有，
+    会话限 LOCAL_SESSION_SECONDS；没开 SSO 时它就是平常的登录方式，照旧长期有效。
+    """
     session.clear()
     session["role"] = sso.ROLE_SUPERADMIN
     session["via"] = "local"
-    session["expires"] = time.time() + LOCAL_SESSION_SECONDS
+    if (load_config().get("sso") or {}).get("enabled"):
+        session["expires"] = time.time() + LOCAL_SESSION_SECONDS
     session.permanent = True
 
 
@@ -253,13 +265,16 @@ def logout():
             url = sso.logout_url(sso.settings_from(load_config()), id_token)
         except RuntimeError:
             url = None
-    # 有 redirect 时前端接着去 SSO 那边也退出，不然下次点「用 Palintropic 账户登录」会被直接放行
-    return jsonify({"ok": True, "redirect": url} if url else {"ok": True})
+    # 有 redirect 时前端接着去 SSO 那边也退出，不然下次点「用 Palintropic 账户登录」会被直接放行；
+    # 是账户登录、却拿不到 SSO 退出地址时告诉前端，让人知道 Palintropic 那边还登着
+    if url:
+        return jsonify({"ok": True, "redirect": url})
+    return jsonify({"ok": True, "sso_signed_out": False} if id_token else {"ok": True})
 
 
 # 登录页回来时可以带上看板的 #位置（跟 login.html 的 returnHash 同一个格式），别的一律不收，
 # 免得被拿去当开放跳转
-_RETURN_HASH = re.compile(r"^#(p=\d+|s=\w+|m=[^#\s]+)$")
+_RETURN_HASH = re.compile(r"^#(p=\d+|s=\w+|m=[^#\s]{1,200})$")
 
 
 def _sso_settings():
@@ -306,8 +321,14 @@ def _live_pendings():
     if not isinstance(stored, dict):
         return {}
     now = time.time()
-    return {state: p for state, p in stored.items()
-            if isinstance(p, dict) and now - float(p.get("ts") or 0) <= sso.PENDING_MAX_AGE}
+    live = {}
+    for state, p in stored.items():
+        try:
+            if isinstance(p, dict) and now - float(p.get("ts") or 0) <= sso.PENDING_MAX_AGE:
+                live[state] = p
+        except (TypeError, ValueError):
+            continue
+    return live
 
 
 @app.route("/auth/callback")

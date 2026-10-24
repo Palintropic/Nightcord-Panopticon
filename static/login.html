@@ -72,7 +72,7 @@ function bufferToBase64url(buf){
 // Being sent here from a dashboard address keeps its #part (the browser carries it across the
 // redirect), so after signing in the same page opens. Only the dashboard's own forms pass.
 function returnHash(){
-  return /^#(p=\d+|s=\w+|m=[^#\s]+)$/.test(location.hash) ? location.hash : '';
+  return /^#(p=\d+|s=\w+|m=[^#\s]{1,200})$/.test(location.hash) ? location.hash : '';
 }
 
 // Palintropic sign-in leaves the page, so the #part goes along as ?next= and comes back with it.
@@ -88,6 +88,7 @@ const SSO_ERRORS = {
   no_roles: 'Palintropic 没有发来权限信息，暂时不能用账户登录。超级管理员可以用下面的本地登录',
   unavailable: '连不上 Palintropic，过一会儿再试；超级管理员可以用下面的本地登录',
   failed: '账户登录失败，再试一次',
+  logout: '已经退出看板，但没连上 Palintropic，那边的账户还登着；用的是别人的电脑的话，记得到账户中心退出',
 };
 
 // With Palintropic sign-in on, it is the main way in and the local forms become the fallback

@@ -349,6 +349,58 @@ class ReviewFixTests(SsoTestCase):
             self.assertEqual(self.get("/api/status").status_code, 401)
 
 
+class SecondReviewTests(SsoTestCase):
+    def test_empty_config_file_closes_the_dashboard(self):
+        open(app.CONFIG_PATH, "w").close()
+        for path in ("/api/status", "/api/config", "/api/me"):
+            self.assertEqual(self.get(path).status_code, 503, path)
+
+    def test_local_login_without_sso_keeps_its_long_session(self):
+        cfg = self.config()
+        del cfg["sso"]
+        self.write_config(cfg)
+        self.client.post("/login", base_url=SITE, json={"username": "mizuki", "password": "pw"})
+        later = time.time() + app.LOCAL_SESSION_SECONDS + 1
+        with mock.patch.object(app.time, "time", lambda: later):
+            self.assertEqual(self.get("/api/status").status_code, 200)
+
+    def test_cookie_is_secure_on_the_sso_host_even_when_https_is_not_recognised(self):
+        # The proxy is not in trusted_proxies, so X-Forwarded-Proto is ignored and the request looks like http.
+        resp = self.client.post("/login", base_url="http://panopticon.example",
+                                headers={"X-Forwarded-Proto": "https"}, json={"username": "mizuki", "password": "pw"})
+        self.assertIn("Secure", resp.headers["Set-Cookie"])
+
+    def test_sign_out_says_when_sso_could_not_be_signed_out(self):
+        self.sign_in()
+        sso.provider = sso.Provider()
+
+        def down(url, timeout=None):
+            raise sso.requests.ConnectionError("nope")
+        with mock.patch.object(sso.requests, "get", down):
+            body = self.client.post("/logout", base_url=SITE).get_json()
+        self.assertEqual(body, {"ok": True, "sso_signed_out": False})
+
+    def test_damaged_pending_entry_is_dropped_not_a_500(self):
+        q = self.start()
+        with self.client.session_transaction(base_url=SITE) as s:
+            s["sso_pending"] = {**s["sso_pending"], "junk": {"ts": "not a number"}}
+        self.assertEqual(self.get(f"/auth/callback?code=abc&state={q['state']}").headers["Location"], "/")
+
+    def test_long_next_is_dropped(self):
+        resp = self.sign_in("%23m%3D" + "a" * 300)
+        self.assertEqual(resp.headers["Location"], "/")
+
+    def test_a_key_replaced_under_the_same_kid_stops_working_after_the_jwks_lifespan(self):
+        self.sign_in()
+        self.client.post("/logout", base_url=SITE)
+        replaced = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(OTHER_KEY.public_key()))
+        replaced.update(kid=KID, alg="RS256", use="sig")
+        later = time.monotonic() + sso.DISCOVERY_TTL + 1
+        with mock.patch.object(jwt.PyJWKClient, "fetch_data", lambda _self: {"keys": [replaced]}), \
+                mock.patch("jwt.jwk_set_cache.time.monotonic", lambda: later):
+            self.assertEqual(self.sign_in().headers["Location"], "/login?sso_error=failed")
+
+
 class LocalLoginTests(SsoTestCase):
     def test_local_password_is_the_superadmin_way_in(self):
         resp = self.client.post("/login", base_url=SITE, json={"username": "mizuki", "password": "pw"})

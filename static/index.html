@@ -467,7 +467,7 @@ function signInAgain(){
   lastData = null;
   document.getElementById('content').innerHTML = '';
   document.getElementById('settingsView').hidden = true;
-  const hash = /^#(p=\d+|s=\w+|m=[^#\s]+)$/.test(location.hash) ? location.hash : '';
+  const hash = /^#(p=\d+|s=\w+|m=[^#\s]{1,200})$/.test(location.hash) ? location.hash : '';
   location.replace(me && me.via === 'sso'
     ? '/auth/login' + (hash ? '?next=' + encodeURIComponent(hash) : '')
     : '/login' + hash);
@@ -1072,6 +1072,7 @@ async function fetchJsonWithTimeout(url, ms, controller){
   const timer = setTimeout(() => controller.abort(), ms);
   try{
     const res = await fetch(url, {signal:controller.signal});
+    if(res.status === 401) signInAgain();   // whichever request notices first clears the screen
     const data = await res.json();
     return {ok:res.ok, status:res.status, data};
   }finally{
@@ -1131,7 +1132,7 @@ document.getElementById('refresh').addEventListener('click', () => refresh(false
 document.getElementById('logout').addEventListener('click', async () => {
   // Signed in through Palintropic: the answer names the SSO sign-out, which comes back to /login.
   const data = await fetch('/logout', {method:'POST'}).then(r => r.json()).catch(() => ({}));
-  location.href = data.redirect || '/login';
+  location.href = data.redirect || (data.sso_signed_out === false ? '/login?sso_error=logout' : '/login');
 });
 
 loadMe();
