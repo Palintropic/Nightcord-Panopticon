@@ -462,12 +462,17 @@ let publicView = false;
 function isSuperadmin(){ return !!me && me.role === 'superadmin'; }
 // Anything short of a clear "signed in" shows the public page: a slow or failing /api/me must not
 // leave the page waiting, nor send it to the private status (which would bounce to the login page).
+// After a failure (not a plain 401) each refresh asks again, so a live session comes back by itself.
+let meUncertain = false;
 async function loadMe(){
+  const wasPublic = publicView;
   try{
     const r = await fetchJsonWithTimeout('/api/me', 5000, undefined, true);
     if(r.ok) me = r.data;
     publicView = !r.ok;
-  }catch(e){ publicView = true; }
+    meUncertain = !r.ok && r.status !== 401;
+  }catch(e){ publicView = true; meUncertain = true; }
+  if(wasPublic && !publicView){ lastData = null; loadKaomoji(); }
   document.getElementById('logout').textContent = publicView ? '登录' : '退出登录';
   // A bookmarked #s=<page> only resolves now, so open it as freshly opened (its forms load).
   render(route().view === 'settings');
@@ -627,9 +632,10 @@ function noData(){
   if(!lastData) return '<div class="empty-hint">加载中…</div>';
   if(lastData.error) return `<div class="empty-hint">${escapeHtml(lastData.error)}</div>`;
   if(!panels().length){
+    if(publicView) return `<div class="empty-hint">${lastData.pending ? '状态数据还没准备好，稍等一下。' : '还没有机器。'}</div>`;
     return lastData.remote_pending
       ? '<div class="empty-hint">正在采集 Nightcord-Status 的数据…</div>'
-      : `<div class="empty-hint">${publicView ? '还没有机器。' : '还没有机器上报。去设置里部署青源 agent 吧。'}</div>`;
+      : '<div class="empty-hint">还没有机器上报。去设置里部署青源 agent 吧。</div>';
   }
   return '';
 }
@@ -1131,6 +1137,7 @@ async function loadTileHistory(){
 // dashboard never rolls back to stale numbers.
 let statusSeq = 0;
 async function refresh(animate){
+  if(publicView && meUncertain) await loadMe();
   const seq = ++statusSeq;
   let data;
   try{

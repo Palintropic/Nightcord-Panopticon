@@ -106,16 +106,40 @@ class PublicStatusTests(unittest.TestCase):
         self.write(kaomoji={"assign": {"tokyo": "爱莉", "retired-box": "绘名"},
                             "faces": {"爱莉": ["a", "b", "c"], "绘名": ["d", "e", "f"], "secret-role": ["g", "h", "i"]}})
         body = self.public().get_json()
-        self.assertEqual(set(body), {"panels", "kaomoji"})
+        self.assertEqual(set(body), {"panels", "kaomoji", "pending"})
         self.assertEqual(body["kaomoji"], {"assign": {"tokyo": "爱莉"}, "faces": {"爱莉": ["a", "b", "c"]}})
         self.assertEqual(self.client.get("/api/kaomoji").status_code, 401)
 
-    def test_anonymous_requests_never_start_a_remote_fetch(self):
-        self.write(nightcord_status={"enabled": True, "source": "pull", "url": "http://10.10.0.4:8702"})
+    def pull_mode_with_remote_cache(self, age):
+        self.write(nightcord_status={"enabled": True, "name": "NS", "source": "pull", "url": "http://10.10.0.4:8702"})
+        ticket = app._begin_remote_fetch()
+        app._store_remote([{"name": "NS", "kind": "nightcord-status", "online": True, "targets": []}], ticket)
+        with app._remote_lock:
+            app._remote["ts"] = time.time() - age
+
+    def test_anonymous_requests_leave_a_recent_remote_cache_alone(self):
+        self.pull_mode_with_remote_cache(age=30)   # older than the dashboard's 10 s, younger than a minute
         for _ in range(3):
             self.public()
         self.assertEqual(self.refreshes, [])
-        self.client.get("/api/status")   # signed out: refused before it could start one either
+        self.assertEqual(self.card("NS")["state"], "ok")
+
+    def test_a_remote_cache_older_than_a_minute_is_refreshed_once_per_answer(self):
+        # Multi-worker deployments: the alert worker's fetch lives in its own process, so a web worker
+        # that only serves anonymous visitors has to fetch for itself.
+        self.pull_mode_with_remote_cache(age=61)
+        self.client.get("/api/public/status")
+        self.client.get("/api/public/status")   # within the five seconds: the cached answer, no new fetch
+        self.assertEqual(self.refreshes, [1])
+
+    def test_no_remote_data_yet_says_pending_instead_of_no_machines(self):
+        self.write(nightcord_status={"enabled": True, "source": "pull", "url": "http://10.10.0.4:8702"})
+        body = self.public().get_json()
+        self.assertEqual(body["panels"], [])
+        self.assertTrue(body["pending"])
+
+    def test_signed_out_status_still_refuses(self):
+        self.client.get("/api/status")
         self.assertEqual(self.refreshes, [])
 
     def test_answers_are_reused_for_a_few_seconds(self):

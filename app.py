@@ -701,14 +701,14 @@ def api_status():
     return jsonify({**_status_snapshot(cfg), "thresholds": _thresholds()})
 
 
-def _status_snapshot(cfg, refresh=True):
+def _status_snapshot(cfg, max_age=CACHE_TTL):
     has_remote = bool((cfg.get("nightcord_status") or {}).get("enabled")) and not _nightcord_push_mode(cfg)
     now = time.time()
     with _remote_lock:
         remote, remote_ts, remote_fp = _remote["data"], _remote["ts"], _remote["fp"]
     if remote is not None and remote_fp != _remote_fingerprint(cfg):
         remote = None  # 缓存是按改之前的配置采的（可能是别的进程改的配置）
-    if refresh and (remote is None or now - remote_ts >= CACHE_TTL):
+    if remote is None or now - remote_ts >= max_age:
         _refresh_remote_async()
     return {
         "panels": _with_qingyuan(remote or []),
@@ -755,9 +755,11 @@ def _public_card(p, th):
             "nodata": not online or all(v is None for v in values.values())}
 
 
-# 匿名请求谁都能发，不能让它驱动采集或者每次都扫一遍数据库：远程数据只读现有缓存（后台巡检每分钟会刷新），
-# 整个结果全局缓存几秒
+# 匿名请求谁都能发，不能拿它驱动采集或者每次都扫一遍数据库：整个结果缓存几秒；拉取模式的远程数据
+# 缺了或者超过一分钟才让它刷新一次（同一时间只跑一个），匿名流量最多每分钟带出一次采集，跟后台巡检
+# 同一个量级。不能完全不刷新：远程缓存在进程内存里，多 worker 部署时巡检进程采到的结果别的进程看不到。
 PUBLIC_CACHE_SECONDS = 5
+PUBLIC_REMOTE_MAX_AGE = 60
 _public_cache = {"at": 0.0, "body": None}
 _public_lock = threading.Lock()
 
@@ -775,15 +777,23 @@ def api_public_status():
     with _public_lock:
         if _public_cache["body"] is not None and now - _public_cache["at"] < PUBLIC_CACHE_SECONDS:
             return jsonify(_public_cache["body"])
-        try:
-            cfg = load_config()
-        except RuntimeError:
-            return jsonify({"error": "看板还没配置好"}), 400
-        th = _thresholds()
-        cards = [_public_card(p, th) for p in _status_snapshot(cfg, refresh=False)["panels"]]
-        body = {"panels": cards, "kaomoji": _public_kaomoji(cfg, {c["name"] for c in cards})}
+    # 锁外重算：读配置和数据库慢的时候，别的匿名请求不用排队等它（过期那一刻可能有几个一起算，无妨）
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        return jsonify({"error": "看板还没配置好"}), 400
+    snapshot = _status_snapshot(cfg, max_age=PUBLIC_REMOTE_MAX_AGE)
+    th = _thresholds()
+    cards = [_public_card(p, th) for p in snapshot["panels"]]
+    body = {
+        "panels": cards,
+        "kaomoji": _public_kaomoji(cfg, {c["name"] for c in cards}),
+        # 还有数据没到（拉取模式第一次采集中）：前端说「还没准备好」，而不是「还没有机器」
+        "pending": snapshot["remote_pending"],
+    }
+    with _public_lock:
         _public_cache.update(at=now, body=body)
-        return jsonify(body)
+    return jsonify(body)
 
 
 def _number(value, low, high, cast=float):

@@ -133,6 +133,11 @@ const summary = () => document.getElementById('statusSummary').textContent;
     role = failure; await api.loadMe();
     out['meFails_' + failure] = api.route();
   }
+  // The session was fine all along: the next refresh asks again and the full view comes back.
+  role = 'superadmin';
+  responses.push({data: status(Date.now() / 1000)});
+  await api.refresh(false); await tick();
+  out.meRecovered = api.route();
 
   process.stdout.write(JSON.stringify(out));
 })();

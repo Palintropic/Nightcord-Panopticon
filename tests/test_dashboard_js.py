@@ -56,6 +56,9 @@ class DashboardStatusBarTests(unittest.TestCase):
         self.assertEqual(self.steps["meFails_broken"], {"view": "list", "pivot": 0})
         self.assertEqual(self.steps["publicRedirect"], self.steps["afterExpiry"])   # no new redirect
 
+    def test_after_a_failed_me_the_next_refresh_restores_the_signed_in_view(self):
+        self.assertEqual(self.steps["meRecovered"], {"view": "settings", "page": "notify"})
+
     def test_expired_session_goes_back_to_sign_in_at_the_same_place(self):
         self.assertEqual(self.steps["afterExpiry"], "/login#p=1")
 
