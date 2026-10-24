@@ -32,6 +32,7 @@ vSphere API 把 ESXi 宿主机的指标接进同一套流水线，不用在 ESXi
 - `nightcord_status_client.py`：拉取模式下读取 Nightcord-Status 的 `/api/status.json`（推送模式不用它）。
 - `notifier.py`：阈值判断 + 边缘触发的飞书/邮件告警（问题刚发生时发一次，不会每轮巡检都重发），解除时发恢复通知。
 - `webauthn_manager.py` + `static/login.html`：session 登录，密码之外还支持 Passkey（WebAuthn）。
+- `sso.py`：用 Palintropic 账户登录（OIDC），按账户档位分超级管理员 / 一般管理员。
 
 通用配置指南（不绑定具体服务器）见 [SETUP.zh-CN.md](SETUP.zh-CN.md)；一份具体案例（含 WireGuard 组网、systemd、Nginx+HTTPS）见 [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md)。
 
@@ -124,6 +125,25 @@ dashboard_auth:
 （`localhost`/`127.0.0.1` 除外）——WebAuthn 在普通 HTTP 下用不了。
 
 如果你只打算在 WireGuard 内网访问 Panopticon（不公网暴露），`enabled` 保持 `false` 即可，省掉每次登录的麻烦。
+
+### 用 Palintropic 账户登录（SSO）
+
+在 `config.yaml` 的 `sso` 段接上 Palintropic 账户（OIDC 授权码 + PKCE，机密 client）。开启后总要登录
+（不管 `dashboard_auth.enabled`），登录页最上面是「用 Palintropic 账户登录」，本地密码 / Passkey 降为应急入口。
+
+- 档位来自 ID token 的 `roles` 声明：`panopticon:superadmin` 什么都能做；`panopticon:admin` 只能看看板、
+  机器详情和历史，设置、密钥、部署 / 移除 agent、移除机器一律 `403`。两档都没有的账户登不进来。
+- `roles` 声明整个缺失时拒绝登录（说明 SSO 那边的 token hook 没生效），不当成「没有权限」放过去。
+- ID token 验签名（只认 RS256 / ES256 / EdDSA）、`iss`、`aud`、`exp`、`nonce`；不拿 refresh token，
+  access token 不当身份凭据。
+- 看板会话 `session_minutes`（默认 60 分钟）到期后，看板自动回 SSO 重新授权，档位那时重新查一次，所以在
+  SSO 撤销档位后最迟这么久生效。Palintropic 的会话还在的话不用重新输密码。
+- 退出登录会顺带退出 Palintropic（需要填 `post_logout_redirect_uri`，且那时连得上 SSO；连不上就只退出看板，登录页会提示）。
+- issuer 必须是 https（本机 localhost 除外），discovery 给的各个地址必须跟 issuer 同源，client 密钥不会发到别处。
+- 回调地址只登记一个。从别的地址（比如 WireGuard 内网 IP）点账户登录，会先转到回调地址所在的域名。
+- 本地密码 / Passkey 登进来就是超级管理员（SSO 连不上时只有站长自己能进）；开了 SSO 时这种会话 12 小时过期。
+
+client 在 Palintropic 那边用 `bin/palid client` 建，`redirect_uri` 要跟那边登记的一字不差。
 
 ## 可扩展方向
 

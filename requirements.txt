@@ -4,3 +4,4 @@ pyyaml>=6.0
 paramiko>=3.4
 cryptography>=41
 webauthn>=2.0
+pyjwt[crypto]>=2.8

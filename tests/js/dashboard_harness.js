@@ -29,6 +29,8 @@ const location = {
   _hash: '',
   get hash(){ return this._hash; },
   set hash(v){ this._hash = v; (windowListeners.hashchange || []).forEach(fn => fn()); },
+  replaced: null,
+  replace(url){ this.replaced = url; },
 };
 const window = {
   matchMedia(){ return {matches: false}; },
@@ -36,15 +38,18 @@ const window = {
 };
 
 const responses = [];   // queue of {data} or {fail: true}
+let role = 'superadmin';   // what /api/me answers
 function fetch(url){
+  if(url === '/api/me') return Promise.resolve({ok: true, status: 200, json: async () => ({role})});
   if(!url.startsWith('/api/status')) return Promise.resolve({ok: true, status: 200, json: async () => ({samples: []})});
   const next = responses.shift() || {fail: true};
   if(next.fail) return Promise.reject(new Error('network down'));
+  if(next.status) return Promise.resolve({ok: false, status: next.status, json: async () => ({error: '未登录'})});
   return Promise.resolve({ok: true, status: 200, json: async () => next.data});
 }
 
 const api = new Function('document', 'window', 'location', 'fetch', 'setInterval',
-  script + '; return {refresh, machinesView, overviewItem, panels, route};')(document, window, location, fetch, () => 0);
+  script + '; return {refresh, machinesView, overviewItem, panels, route, loadMe};')(document, window, location, fetch, () => 0);
 
 const tick = () => new Promise(r => setTimeout(r, 0));
 const summary = () => document.getElementById('statusSummary').textContent;
@@ -90,6 +95,16 @@ const summary = () => document.getElementById('statusSummary').textContent;
     location._hash = hash;
     out.routes[hash] = api.route();
   }
+
+  role = 'admin';
+  await api.loadMe();
+  location._hash = '#s=notify';
+  out.adminRoute = api.route();
+
+  location._hash = '#p=1';
+  responses.push({status: 401});
+  await api.refresh(false); await tick();
+  out.afterExpiry = location.replaced;
 
   process.stdout.write(JSON.stringify(out));
 })();

@@ -35,6 +35,7 @@ Browser <-- HTTP --> Flask backend (app.py)
 - `nightcord_status_client.py`: reads Nightcord-Status's `/api/status.json` in pull mode (push mode doesn't use it).
 - `notifier.py`: threshold evaluation + edge-triggered Feishu/email alerts (fires once when a problem starts, not on every check cycle), with a recovery notice when it clears.
 - `webauthn_manager.py` + `static/login.html`: session-based login with optional Passkey (WebAuthn) support alongside the password.
+- `sso.py`: sign-in with a Palintropic account (OIDC), with the account's tier deciding superadmin or general admin.
 
 General setup guide (not tied to a specific server) at [SETUP.md](SETUP.md); a worked example (WireGuard mesh, systemd, Nginx+HTTPS) at [DEPLOY.zh-CN.md](DEPLOY.zh-CN.md) (Chinese only, commands are still copy-pasteable).
 
@@ -136,6 +137,33 @@ password login, and require HTTPS (`localhost`/`127.0.0.1` excluded) since WebAu
 HTTP otherwise.
 
 If you only ever access Panopticon from inside WireGuard and don't plan to expose it publicly, leave `enabled: false` and skip the login prompt entirely.
+
+### Sign in with a Palintropic account (SSO)
+
+The `sso` section of `config.yaml` adds Palintropic accounts (OIDC authorization code + PKCE, confidential
+client). With it on, signing in is always required (whatever `dashboard_auth.enabled` says), the login page
+leads with "用 Palintropic 账户登录", and the local password / Passkey become the fallback.
+
+- The tier comes from the ID token's `roles` claim: `panopticon:superadmin` can do everything;
+  `panopticon:admin` sees the dashboard, machine details and history, and gets `403` on settings, secrets,
+  deploying / removing agents and removing machines. Accounts with neither cannot sign in.
+- A missing `roles` claim refuses the sign-in (it means the SSO token hook did not run) rather than being
+  read as "no tier".
+- The ID token's signature (RS256 / ES256 / EdDSA only), `iss`, `aud`, `exp` and `nonce` are checked; no
+  refresh token is requested and the access token is never used as proof of identity.
+- After `session_minutes` (default 60) the dashboard goes back to SSO on its own, which looks the tier up
+  again, so a revoked tier takes effect within that time. A live Palintropic session makes this silent.
+- Signing out also signs out of Palintropic (needs `post_logout_redirect_uri` and SSO being reachable at the
+  time; otherwise only the dashboard session ends, and the login page says so).
+- The issuer must be https (localhost excepted) and every discovery address must share its origin, so the
+  client secret is never sent anywhere else.
+- Only one callback address is registered. Starting the account sign-in from another address (e.g. the
+  WireGuard IP) first moves to the callback's host.
+- The local password / Passkey sign in as superadmin (when SSO is unreachable only the site owner gets in);
+  with SSO on, such a session ends after 12 hours.
+
+Create the client on the Palintropic side with `bin/palid client`; `redirect_uri` must match what is
+registered there exactly.
 
 ## Ideas for extension
 
