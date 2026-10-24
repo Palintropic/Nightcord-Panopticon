@@ -12,6 +12,9 @@ worker_class = "gthread"
 threads = 32
 timeout = 60
 graceful_timeout = 10
+# 前面的反代（Caddy 默认把到上游的空闲连接留 2 分钟）会复用连接；这里要比它留得久。gunicorn 默认
+# 2 秒就关，反代偶尔拿一条刚被关掉的连接发请求，得到 EOF，POST 不会重试，直接回 502。
+keepalive = 150
 
 
 def post_worker_init(worker):
