@@ -244,6 +244,7 @@ class SshTests(unittest.TestCase):
             self.assertEqual(iface.users, [("mizuki", "ssh-ed25519-cert-v01@openssh.com")])
             self.assertEqual(iface.pty, ("xterm-256color", 100, 30))
             self.assertEqual(state["peer"][0], "127.0.0.1")   # bound to the configured source address
+            self.assertTrue(transport.sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
             ws = FakeWs([json.dumps({"t": "resize", "cols": 120, "rows": 40}),
                          json.dumps({"t": "in", "d": "ls\n"}), json.dumps({"t": "in", "d": "exit\n"})])
             reason, bytes_in, bytes_out = terminal.bridge(ws, chan, Closed, abort=lambda: None)
@@ -257,6 +258,18 @@ class SshTests(unittest.TestCase):
         self.assertIn(b"echo:ls", output)
         self.assertEqual(bytes_out, len(output))
         self.assertEqual(iface.pty[1:], (120, 40))
+
+    def test_no_delay_sets_tcp_nodelay_and_ignores_what_it_cannot_set(self):
+        listener = socket.create_server(("127.0.0.1", 0))
+        sock = socket.create_connection(listener.getsockname())
+        try:
+            terminal.no_delay(sock)
+            self.assertTrue(sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+        finally:
+            sock.close()
+            listener.close()
+        terminal.no_delay(sock)       # closed
+        terminal.no_delay(None)       # a WebSocket without a socket attribute
 
     def test_a_different_host_key_is_refused_before_signing_in(self):
         listener, iface, _ = start_server(self.key)

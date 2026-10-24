@@ -189,6 +189,17 @@ class HostKeyMismatch(Exception):
     pass
 
 
+def no_delay(sock):
+    """
+    关掉 Nagle：按键和回显都是几个字节的小包，开着 Nagle 时打字一快，后一个包要等前一个的 ACK
+    （隔着 WireGuard 一个往返几十毫秒），手感一顿一顿的。设不上（不是 TCP、已经断了）就算了。
+    """
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except (AttributeError, OSError):
+        pass
+
+
 def connect(host, key, source_address, cols, rows, timeout=CONNECT_TIMEOUT):
     """
     连上目标机并开一个 pty shell，返回 (transport, channel)。
@@ -197,6 +208,7 @@ def connect(host, key, source_address, cols, rows, timeout=CONNECT_TIMEOUT):
     """
     sock = socket.create_connection((host["address"], host["port"]), timeout=timeout,
                                     source_address=(source_address, 0))
+    no_delay(sock)
     try:
         transport = paramiko.Transport(sock)
     except Exception:
