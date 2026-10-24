@@ -13,6 +13,7 @@
 import base64
 import ipaddress
 import json
+import queue
 import re
 import secrets
 import socket
@@ -33,6 +34,7 @@ TICKETS_PER_SESSION = 3
 MAX_PER_USER = 3
 MAX_TOTAL = 8            # 每个终端占 gunicorn 一个线程，留够给看板本身
 IDLE_SECONDS = 15 * 60   # 这么久没有键盘输入就断开
+OUTPUT_BACKLOG = 256     # 发往浏览器的输出最多积压这么多块（每块最多 32 KB），浏览器读得太慢就断开
 MAX_SECONDS = 2 * 3600   # 单次最长
 CONNECT_TIMEOUT = 10
 OUTBOX_MAX_ATTEMPTS = 100  # 后台每分钟重试一次，推不出去的审计最多重试这么多次
@@ -43,6 +45,7 @@ END_REASONS = {
     "browser_closed": "浏览器关掉了",
     "idle": f"{IDLE_SECONDS // 60} 分钟没有输入",
     "time_limit": f"超过单次最长 {MAX_SECONDS // 3600} 小时",
+    "slow_browser": "浏览器收得太慢，输出积压太多",
     "host_key_mismatch": "主机指纹对不上，没有连",
     "connect_failed": "连不上目标机",
     "unknown": "Panopticon 重启时还开着，结束时间不确定",
@@ -187,7 +190,11 @@ def connect(host, key, source_address, cols, rows, timeout=CONNECT_TIMEOUT):
     """
     sock = socket.create_connection((host["address"], host["port"]), timeout=timeout,
                                     source_address=(source_address, 0))
-    transport = paramiko.Transport(sock)
+    try:
+        transport = paramiko.Transport(sock)
+    except Exception:
+        sock.close()
+        raise
     try:
         if host["host_key_type"] == "ssh-rsa":
             transport.get_security_options().key_types = ("rsa-sha2-512", "rsa-sha2-256")
@@ -227,7 +234,10 @@ def bridge(ws, chan, closed_errors, clock=time.monotonic, idle=IDLE_SECONDS, lim
     counts = {"in": 0, "out": 0}
     done = threading.Event()
     outcome = {}
+    backlog = queue.Queue(maxsize=OUTPUT_BACKLOG)
 
+    # 目标机 → 积压队列 → 浏览器，分成两个线程：浏览器不读时卡住的只是发送那个线程，
+    # 读目标机的这边发现队列满了就结束会话（关掉之后发送线程也随 WebSocket 一起解开）。
     def pump():
         chan.settimeout(0.5)
         try:
@@ -239,17 +249,36 @@ def bridge(ws, chan, closed_errors, clock=time.monotonic, idle=IDLE_SECONDS, lim
                 if not data:
                     outcome.setdefault("reason", "exit")
                     break
-                ws.send(data)
-                counts["out"] += len(data)
-        except closed_errors:
-            outcome.setdefault("reason", "browser_closed")
+                try:
+                    backlog.put_nowait(data)
+                except queue.Full:
+                    outcome.setdefault("reason", "slow_browser")
+                    break
         except Exception:
             outcome.setdefault("reason", "exit")
         finally:
             done.set()
 
+    def deliver():
+        try:
+            while not (done.is_set() and backlog.empty()):
+                try:
+                    data = backlog.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                ws.send(data)
+                counts["out"] += len(data)
+        except closed_errors:
+            outcome.setdefault("reason", "browser_closed")
+        except Exception:
+            outcome.setdefault("reason", "browser_closed")
+        finally:
+            done.set()
+
     reader = threading.Thread(target=pump, daemon=True)
+    sender = threading.Thread(target=deliver, daemon=True)
     reader.start()
+    sender.start()
     started = last_input = clock()
     try:
         while not done.is_set():
@@ -283,6 +312,7 @@ def bridge(ws, chan, closed_errors, clock=time.monotonic, idle=IDLE_SECONDS, lim
     finally:
         done.set()
         reader.join(timeout=2)
+        sender.join(timeout=2)
     return outcome.get("reason", "exit"), counts["in"], counts["out"]
 
 
@@ -292,23 +322,34 @@ def _when(ts):
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
+_PLAIN = str.maketrans({"<": "＜", ">": "＞", "[": "［", "]": "］", "*": "＊", "`": "＇", "\n": " ", "\r": " "})
+
+
+def _plain(value):
+    """
+    放进推送正文的字段（名字是用户自己在 SSO 里填的）：去掉飞书 / Slack 会当成标记的字符，
+    免得有人把名字改成 <at id=all></at> 或者一段链接。
+    """
+    return str(value if value is not None else "?").translate(_PLAIN)[:200]
+
+
 def describe(event):
     """一条审计的正文：推到飞书和 Slack 的都是这段。"""
-    who = f"{event.get('name') or '?'}（{event.get('email') or event.get('sub')}）"
-    where = f"{event.get('label')}（{event.get('host')}，{event.get('address')}）"
+    who = f"{_plain(event.get('name'))}（{_plain(event.get('email') or event.get('sub'))}）"
+    where = f"{_plain(event.get('label'))}（{_plain(event.get('host'))}，{_plain(event.get('address'))}）"
     lines = [
         f"时间：{_when(event['at'])}",
         f"谁：{who}",
         f"哪台：{where}",
-        f"从：{event.get('client_ip') or '?'}",
-        f"会话：{event['session']}",
+        f"从：{_plain(event.get('client_ip'))}",
+        f"会话：{_plain(event['session'])}",
     ]
     if event["kind"] == "close":
         minutes = max(0, int(event.get("duration") or 0)) // 60
         lines += [
             f"时长：{minutes} 分钟",
             f"输入 / 输出：{event.get('bytes_in', 0)} / {event.get('bytes_out', 0)} 字节",
-            f"原因：{END_REASONS.get(event.get('reason'), event.get('reason'))}",
+            f"原因：{_plain(END_REASONS.get(event.get('reason'), event.get('reason')))}",
         ]
     title = "终端已打开" if event["kind"] == "open" else "终端已关闭"
     return title, lines
@@ -332,9 +373,14 @@ class Auditor:
         self._lock = threading.Lock()  # 同一条记录别被两个线程同时推两遍
 
     def record(self, event, cfg):
-        """记一条审计，马上试着推出去；推不出去的留在 outbox 里等后台重试。"""
-        row_id = metrics_store.outbox_add(event, event["at"])
-        self.deliver_pending(cfg, only=row_id)
+        """
+        记一条审计，马上试着推出去；推不出去的留在 outbox 里等后台重试。同一个会话的「打开」「关闭」
+        各只记一次（会话号 + 种类唯一），重复记录直接忽略。投递是「至少一次」：推成功了但还没来得及
+        标记就崩溃的话，重启后会再推一遍。
+        """
+        row_id = metrics_store.outbox_add(f"{event['session']}:{event['kind']}", event, event["at"])
+        if row_id:
+            self.deliver_pending(cfg, only=row_id)
 
     def deliver_pending(self, cfg, only=None):
         with self._lock:
@@ -376,7 +422,8 @@ def close_unfinished(auditor, cfg, now=None):
     """启动时调：上次进程退出时还开着的终端补记结束（原因 unknown），并推一条审计。"""
     now = time.time() if now is None else now
     for s in metrics_store.terminal_unfinished():
-        metrics_store.terminal_ended(s["id"], now, s["bytes_in"], s["bytes_out"], "unknown")
+        if not metrics_store.terminal_ended(s["id"], now, s["bytes_in"], s["bytes_out"], "unknown"):
+            continue  # 那边刚好自己记了结束，以它为准
         auditor.record({
             "kind": "close", "at": now, "session": s["id"], "sub": s["sub"], "email": s["email"],
             "host": s["host"], "label": s["host"], "address": "", "client_ip": s["client_ip"],

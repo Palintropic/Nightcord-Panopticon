@@ -275,6 +275,26 @@ class SshTests(unittest.TestCase):
         self.assertIn("主机指纹", str(ctx.exception))
         self.assertEqual(iface.users, [])
 
+    def test_a_browser_that_stops_reading_ends_the_session(self):
+        class Chan:
+            def settimeout(self, t):
+                pass
+
+            def recv(self, n):
+                return b"x" * 1024   # the target never stops talking
+
+            def sendall(self, data):
+                pass
+
+        class StuckWs(FakeWs):
+            def send(self, data):
+                time.sleep(3600)     # the browser never reads
+
+        started = time.monotonic()
+        reason, _, _ = terminal.bridge(StuckWs([]), Chan(), Closed)
+        self.assertEqual(reason, "slow_browser")
+        self.assertLess(time.monotonic() - started, 10)
+
     def test_bridge_stops_when_idle_or_the_browser_leaves(self):
         class Chan:
             def settimeout(self, t):
@@ -347,6 +367,26 @@ class AuditTests(unittest.TestCase):
         self.assertEqual([u for u, _ in self.calls], ["https://slack.example/hook"])   # feishu already done
         self.assertEqual(metrics_store.outbox_pending(terminal.OUTBOX_MAX_ATTEMPTS), [])
 
+    def test_the_same_event_is_recorded_once(self):
+        auditor = terminal.Auditor(post=self.post)
+        auditor.record(self.EVENT, self.CFG)
+        auditor.record(self.EVENT, self.CFG)
+        self.assertEqual(len(self.calls), 2)   # one feishu + one slack, not four
+
+    def test_names_cannot_inject_markup(self):
+        event = {**self.EVENT, "name": "<at id=all></at>[click](https://evil.example)*x*", "label": "a\nb"}
+        title, lines = terminal.describe(event)
+        text = "\n".join(lines)
+        for bad in ("<at", "](", "[click", "*x*"):
+            self.assertNotIn(bad, text)
+        self.assertNotIn("a\nb", text)
+
+    def test_done_records_are_pruned_later(self):
+        terminal.Auditor(post=self.post).record(self.EVENT, self.CFG)
+        metrics_store.outbox_prune(self.EVENT["at"] + 1)
+        with metrics_store._connect() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM audit_outbox").fetchone()[0], 0)
+
     def test_sessions_left_open_by_a_crash_are_closed_as_unknown(self):
         metrics_store.terminal_started("abcd", "s", "a@example.com", "tokyo", "203.0.113.5", "1", 1_000_000)
         terminal.close_unfinished(terminal.Auditor(post=self.post), self.CFG, now=1_000_600)
@@ -372,8 +412,9 @@ class StepUpTests(SsoTestCase):
         self.idp.extra = {"roles": ["panopticon:admin"], "ssh_hosts": ["tokyo"], "amr": ["passkey"],
                           "auth_time": int(time.time())}
 
-    def step_up(self, host="tokyo"):
-        resp = self.client.post("/auth/terminal", base_url=SITE, data={"host": host})
+    def step_up(self, host="tokyo", origin=SITE):
+        headers = {"Origin": origin} if origin else {}
+        resp = self.client.post("/auth/terminal", base_url=SITE, data={"host": host}, headers=headers)
         if resp.status_code != 303 or not resp.headers["Location"].startswith("https://account.example/"):
             return resp, None
         q = {k: v[0] for k, v in parse_qs(urlsplit(resp.headers["Location"]).query).items()}
@@ -414,6 +455,25 @@ class StepUpTests(SsoTestCase):
         _, q = self.step_up()
         self.finish(q)
         self.refused("not_passkey")
+
+    def test_a_sign_in_time_in_the_future_does_not_count(self):
+        self.idp.extra["auth_time"] = int(time.time()) + 600
+        _, q = self.step_up()
+        self.finish(q)
+        self.refused("stale")
+
+    def test_opening_from_another_site_is_refused(self):
+        resp, q = self.step_up(origin="https://evil.example")
+        self.assertIsNone(q)
+        self.refused("origin")
+
+    def test_without_origin_the_referer_must_be_the_dashboard(self):
+        resp = self.client.post("/auth/terminal", base_url=SITE, data={"host": "tokyo"},
+                                headers={"Referer": SITE + "/#p=3"})
+        self.assertTrue(resp.headers["Location"].startswith("https://account.example/"))
+        resp = self.client.post("/auth/terminal", base_url=SITE, data={"host": "tokyo"})
+        self.assertEqual(resp.headers["Location"], "/#p=3")
+        self.refused("origin")
 
     def test_an_earlier_sign_in_does_not_count(self):
         self.idp.extra["auth_time"] = int(time.time()) - 600

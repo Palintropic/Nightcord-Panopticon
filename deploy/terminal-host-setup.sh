@@ -1,7 +1,7 @@
 #!/bin/bash
 # One-time setup on each machine the web terminal can open: trust Panopticon's SSH CA for one account.
 #
-#   sudo bash terminal-host-setup.sh <account> "<CA public key line>"
+#   sudo bash terminal-host-setup.sh <account> "<CA public key line>" [--replace-ca]
 #
 # Get the CA line on the Panopticon host with: .venv/bin/python terminal_ca.py pubkey
 #
@@ -11,35 +11,73 @@
 #   /etc/ssh/sshd_config.d/60-panopticon-terminal.conf  TrustedUserCAKeys + AuthorizedPrincipalsFile
 # Forwarding is not touched here: certificates carry only permit-pty, so terminal logins get no port,
 # agent or X11 forwarding while the account's other logins keep working as before.
-# Undo: delete those three paths and reload sshd.
+#
+# Safe to run again with the same CA. A different CA is refused unless --replace-ca is given (it would
+# invalidate certificates from the old one). Existing files are backed up first; if `sshd -t` rejects the
+# result, everything is put back and sshd is not reloaded.
+# Undo: delete the three paths above and reload sshd.
 set -euo pipefail
 
 account="${1:?account}"
 ca_line="${2:?CA public key line}"
+replace_ca="${3:-}"
 [[ "$account" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || { echo "bad account name" >&2; exit 2; }
 [[ "$ca_line" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+(\ .*)?$ ]] || { echo "not an ssh-ed25519 public key line" >&2; exit 2; }
+[[ -z "$replace_ca" || "$replace_ca" == "--replace-ca" ]] || { echo "unknown option: $replace_ca" >&2; exit 2; }
 id "$account" >/dev/null
 
 conf_dir=/etc/ssh/sshd_config.d
+ca_file=/etc/ssh/panopticon_ca.pub
+principals_dir=/etc/ssh/panopticon_principals
+principals_file="$principals_dir/$account"
+conf_file="$conf_dir/60-panopticon-terminal.conf"
+
 grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' /etc/ssh/sshd_config \
   || { echo "/etc/ssh/sshd_config does not Include $conf_dir/*.conf; add the two lines by hand" >&2; exit 3; }
 if grep -RqiE '^[[:space:]]*(TrustedUserCAKeys|AuthorizedPrincipalsFile)' /etc/ssh/sshd_config "$conf_dir" 2>/dev/null \
-   && ! grep -qs 'panopticon' "$conf_dir/60-panopticon-terminal.conf"; then
+   && ! grep -qs 'panopticon' "$conf_file"; then
   echo "TrustedUserCAKeys / AuthorizedPrincipalsFile already set elsewhere; merge by hand" >&2; exit 3
 fi
+new_key=$(cut -d' ' -f1-2 <<<"$ca_line")
+if [[ -f "$ca_file" && "$(cut -d' ' -f1-2 "$ca_file")" != "$new_key" && "$replace_ca" != "--replace-ca" ]]; then
+  echo "$ca_file already holds a different CA; pass --replace-ca to switch (old certificates stop working)" >&2
+  exit 4
+fi
 
-install -d -m 0755 /etc/ssh/panopticon_principals
-printf '%s\n' "$ca_line" > /etc/ssh/panopticon_ca.pub
-printf '%s\n' "$account" > "/etc/ssh/panopticon_principals/$account"
-chmod 0644 /etc/ssh/panopticon_ca.pub "/etc/ssh/panopticon_principals/$account"
-cat > "$conf_dir/60-panopticon-terminal.conf" <<'CONF'
-# Panopticon web terminal: logins with a certificate from its CA, for the principals listed per account.
-TrustedUserCAKeys /etc/ssh/panopticon_ca.pub
-AuthorizedPrincipalsFile /etc/ssh/panopticon_principals/%u
-CONF
-chmod 0644 "$conf_dir/60-panopticon-terminal.conf"
+# Back up whatever exists, so a rejected config can be put back exactly.
+backup=$(mktemp -d /etc/ssh/.panopticon-backup.XXXXXX)
+for f in "$ca_file" "$principals_file" "$conf_file"; do
+  [[ -e "$f" ]] && cp -a "$f" "$backup/$(basename "$f")"
+done
+restore() {
+  for f in "$ca_file" "$principals_file" "$conf_file"; do
+    if [[ -e "$backup/$(basename "$f")" ]]; then cp -a "$backup/$(basename "$f")" "$f"; else rm -f "$f"; fi
+  done
+}
 
-sshd -t
+write() {  # write <path> <content>: via a temporary file in the same directory, then rename
+  local tmp
+  tmp=$(mktemp "$(dirname "$1")/.panopticon.XXXXXX")
+  printf '%s\n' "$2" > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$1"
+}
+
+install -d -m 0755 "$principals_dir"
+write "$ca_file" "$ca_line"
+write "$principals_file" "$account"
+write "$conf_file" "# Panopticon web terminal: logins with a certificate from its CA, for the principals listed per account.
+TrustedUserCAKeys $ca_file
+AuthorizedPrincipalsFile $principals_dir/%u"
+
+if ! sshd -t; then
+  echo "sshd -t rejected the new configuration; restoring the previous files" >&2
+  restore
+  rm -rf "$backup"
+  exit 5
+fi
+rm -rf "$backup"
+
 if command -v systemctl >/dev/null && systemctl is-active --quiet ssh 2>/dev/null; then
   systemctl reload ssh
 elif command -v systemctl >/dev/null && systemctl is-active --quiet sshd 2>/dev/null; then

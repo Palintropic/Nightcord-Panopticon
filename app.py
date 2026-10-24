@@ -395,6 +395,8 @@ def terminal_start():
     error = None
     if settings is None or term is None or host not in term["hosts"]:
         error = "unknown_host"
+    elif not _from_dashboard(settings):
+        error = "origin"
     elif session.get("via") != "sso" or not session.get("sid") or not session.get("sub"):
         error = "local_session"
     if error:
@@ -422,7 +424,8 @@ def _finish_terminal_step_up(pending, who):
     elif not who["amr"] or who["amr"][-1] != "passkey":
         # amr 是这个 SSO 会话里按先后累计的验证方式，以前用过 passkey 不算数，要看最后这一次
         error = "not_passkey"
-    elif who["auth_time"] is None or who["auth_time"] < float(pending.get("ts") or 0) - STEP_UP_SKEW:
+    elif who["auth_time"] is None or who["auth_time"] < float(pending.get("ts") or 0) - STEP_UP_SKEW \
+            or who["auth_time"] > time.time() + STEP_UP_SKEW:
         error = "stale"
     elif pending.get("host") not in who["ssh_hosts"]:
         error = "host_denied"
@@ -436,6 +439,18 @@ def _finish_terminal_step_up(pending, who):
     return redirect(f"/#p={TERMINAL_PIVOT}")
 
 
+def _from_dashboard(settings):
+    """
+    请求是不是看板自己的页面发的：Origin（没有就看 Referer）必须是 SSO 回调所在的那个正式域名。
+    SameSite=Lax 已经挡住了别的网站带着会话 cookie 发 POST，这里再多一道。
+    """
+    expected = sso.origin_of(settings["redirect_uri"])
+    origin = request.headers.get("Origin")
+    if origin:
+        return origin == expected
+    return (request.headers.get("Referer") or "").startswith(expected + "/")
+
+
 @app.route("/api/terminal/hosts")
 def api_terminal_hosts():
     """
@@ -445,6 +460,8 @@ def api_terminal_hosts():
     term = terminal.settings_from(load_config())
     error = session.pop("terminal_error", None)
     pending = _tickets.peek(session.get("terminal_ticket"), session.get("sid")) if term else None
+    if pending is None:
+        session.pop("terminal_ticket", None)  # 用掉或者过期了的票号不留在 cookie 里
     return jsonify({
         "enabled": term is not None,
         "can_open": session.get("via") == "sso",
@@ -496,11 +513,11 @@ def terminal_ws(ws):
     终端的 WebSocket。enforce_auth 已经挡掉了没登录的；这里再要求：同源（防跨站 WebSocket）、
     会话里那张票还在而且属于这个会话，用掉它，然后签证书、连目标机、开始转发。
     """
-    origin = request.headers.get("Origin", "")
-    if not origin or urlsplit(origin).netloc != request.host:
+    cfg = load_config()
+    settings = sso.settings_from(cfg)
+    if settings is None or request.headers.get("Origin") != sso.origin_of(settings["redirect_uri"]):
         _ws_last_word(ws, t="error", code="origin")
         return
-    cfg = load_config()
     term = terminal.settings_from(cfg)
     entry = _tickets.take(session.get("terminal_ticket"), session.get("sid"))
     if term is None or entry is None or session.get("via") != "sso" or session.get("sub") != entry["sub"]:
@@ -521,6 +538,15 @@ def terminal_ws(ws):
         _terminals.release(session_id)
 
 
+def _best_effort(what, fn, *args, **kwargs):
+    """收尾的每一步各自兜住：哪一步出错都不影响后面的释放和审计。"""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        print(f"[terminal] {what}失败: {e}")
+        return None
+
+
 def _run_terminal(ws, cfg, term, host, entry, session_id):
     try:
         first = json.loads(ws.receive(timeout=5) or "{}")
@@ -529,20 +555,25 @@ def _run_terminal(ws, cfg, term, host, entry, session_id):
     if not isinstance(first, dict):
         first = {}
     cols, rows = terminal.clamp_size(first.get("cols"), first.get("rows"))
-    key, serial = terminal_ca.issue(host["user"], f"{entry['sub']}/{host['id']}/{session_id}",
-                                    term["source_address"])
+    try:
+        key, serial = terminal_ca.issue(host["user"], f"{entry['sub']}/{host['id']}/{session_id}",
+                                        term["source_address"])
+    except Exception as e:
+        print(f"[terminal] 签证书失败: {e}")
+        _ws_last_word(ws, t="error", code="connect_failed")
+        return
     client_ip = get_client_ip(request, trusted_proxies_from(cfg))
     started = time.time()
     base = {"session": session_id, "sub": entry["sub"], "email": entry["email"], "name": entry["name"],
             "host": host["id"], "label": host["label"], "address": host["address"], "client_ip": client_ip}
-    # 先记、先推「打开」，再连：连接本身哪怕出事，审计里也已经有这一次
-    metrics_store.terminal_started(session_id, entry["sub"], entry["email"], host["id"], client_ip, str(serial),
-                                   started)
-    _auditor.record({**base, "kind": "open", "at": started}, cfg)
-    print(f"[terminal] 打开 {session_id}: {entry['email']} → {host['id']} 来自 {client_ip}")
     transport = chan = None
     reason, bytes_in, bytes_out = "exit", 0, 0
     try:
+        # 先记、先推「打开」，再连：连接本身哪怕出事，审计里也已经有这一次
+        _best_effort("记录打开", metrics_store.terminal_started, session_id, entry["sub"], entry["email"],
+                     host["id"], client_ip, str(serial), started)
+        _best_effort("推送打开", _auditor.record, {**base, "kind": "open", "at": started}, cfg)
+        print(f"[terminal] 打开 {session_id}: {entry['email']} → {host['id']} 来自 {client_ip}")
         transport, chan = terminal.connect(host, key, term["source_address"], cols, rows)
         _ws_send_json(ws, t="ready", host=host["label"])
         reason, bytes_in, bytes_out = terminal.bridge(ws, chan, ConnectionClosed)
@@ -553,13 +584,13 @@ def _run_terminal(ws, cfg, term, host, entry, session_id):
         print(f"[terminal] 连接 {host['id']} 失败: {e}")
         reason = "connect_failed"
     finally:
-        for closable in (chan, transport):
+        for name, closable in (("关闭 SSH 通道", chan), ("关闭 SSH 连接", transport)):
             if closable is not None:
-                closable.close()
+                _best_effort(name, closable.close)
         ended = time.time()
-        metrics_store.terminal_ended(session_id, ended, bytes_in, bytes_out, reason)
-        _auditor.record({**base, "kind": "close", "at": ended, "duration": ended - started,
-                         "bytes_in": bytes_in, "bytes_out": bytes_out, "reason": reason}, cfg)
+        _best_effort("记录结束", metrics_store.terminal_ended, session_id, ended, bytes_in, bytes_out, reason)
+        _best_effort("推送结束", _auditor.record, {**base, "kind": "close", "at": ended, "duration": ended - started,
+                                               "bytes_in": bytes_in, "bytes_out": bytes_out, "reason": reason}, cfg)
         print(f"[terminal] 关闭 {session_id}: {reason}")
         _ws_last_word(ws, t="closed", reason=reason, text=terminal.END_REASONS.get(reason, reason))
 
@@ -1553,6 +1584,7 @@ def background_metrics_prune_loop():
 
 
 AUDIT_RETRY_INTERVAL = 60  # 秒
+AUDIT_OUTBOX_KEEP_SECONDS = 30 * 86400  # 推完的审计在本地 outbox 里留 30 天
 
 
 def background_audit_loop():
@@ -1564,6 +1596,7 @@ def background_audit_loop():
     while True:
         try:
             _auditor.deliver_pending(load_config())
+            metrics_store.outbox_prune(time.time() - AUDIT_OUTBOX_KEEP_SECONDS)
         except Exception as e:
             print(f"[background_audit_loop] 出错: {e}")
         time.sleep(AUDIT_RETRY_INTERVAL)

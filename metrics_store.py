@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
 -- 要推出去的审计消息。每个渠道各记一个完成标记，没推成的由后台重试，进程重启也不丢。
 CREATE TABLE IF NOT EXISTS audit_outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
   created_at INTEGER NOT NULL,
   event_json TEXT NOT NULL,
   feishu_done INTEGER NOT NULL DEFAULT 0,
@@ -366,12 +367,14 @@ def terminal_started(session_id, sub, email, host, client_ip, cert_serial, start
 
 
 def terminal_ended(session_id, ended_at, bytes_in, bytes_out, reason):
+    """记结束；已经记过的不覆盖。返回这次是否真的记上了。"""
     with _connect() as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE terminal_sessions SET ended_at=?, bytes_in=?, bytes_out=?, end_reason=?"
             " WHERE id=? AND ended_at IS NULL",
             (int(ended_at), int(bytes_in), int(bytes_out), reason, session_id),
         )
+        return cur.rowcount > 0
 
 
 def terminal_unfinished():
@@ -391,11 +394,19 @@ def terminal_history(sub=None, limit=100):
         return [dict(r) for r in rows]
 
 
-def outbox_add(event, created_at):
+def outbox_add(event_id, event, created_at):
+    """同一个 event_id 只进一次；重复的返回 None。"""
     with _connect() as conn:
-        cur = conn.execute("INSERT INTO audit_outbox (created_at, event_json) VALUES (?, ?)",
-                           (int(created_at), json.dumps(event, ensure_ascii=False)))
-        return cur.lastrowid
+        cur = conn.execute("INSERT OR IGNORE INTO audit_outbox (event_id, created_at, event_json) VALUES (?, ?, ?)",
+                           (event_id, int(created_at), json.dumps(event, ensure_ascii=False)))
+        return cur.lastrowid if cur.rowcount else None
+
+
+def outbox_prune(cutoff):
+    """两边都推成功的旧记录删掉；没推成功的留着当证据。"""
+    with _connect() as conn:
+        conn.execute("DELETE FROM audit_outbox WHERE feishu_done=1 AND slack_done=1 AND created_at < ?",
+                     (int(cutoff),))
 
 
 def outbox_pending(max_attempts):

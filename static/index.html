@@ -968,9 +968,10 @@ async function openTerminal(label){
   termStatus('连接中…');
   if(route().pivot !== TERMINAL_PIVOT) location.hash = '#p=' + TERMINAL_PIVOT;
   render(false);
-  try{ await loadXterm(); }
-  catch(e){ termStatus('终端组件加载失败，刷新页面再试', true); termSession.closed = true; return; }
   const session = termSession;
+  try{ await loadXterm(); }
+  catch(e){ termStatus('终端组件加载失败，刷新页面再试', true); session.closed = true; return; }
+  if(termSession !== session) return;   // 断开 was pressed while xterm.js was still loading
   const term = new Terminal({cursorBlink:true, fontSize:14, scrollback:5000,
     fontFamily:'"Cascadia Mono", Consolas, Menlo, monospace', theme:{background:'#000000'}});
   const fit = new FitAddon.FitAddon();
