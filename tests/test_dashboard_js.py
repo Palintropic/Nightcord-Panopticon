@@ -36,6 +36,9 @@ class DashboardStatusBarTests(unittest.TestCase):
         self.assertEqual(routes["#s=panels"], {"view": "list", "pivot": 5})
         self.assertEqual(routes["#s=bogus"], {"view": "list", "pivot": 5})
 
+    def test_expired_session_goes_back_to_sign_in_at_the_same_place(self):
+        self.assertEqual(self.steps["afterExpiry"], "/login#p=1")
+
     def test_general_admin_never_opens_a_settings_page(self):
         self.assertEqual(self.steps["adminRoute"], {"view": "list", "pivot": 5})
 

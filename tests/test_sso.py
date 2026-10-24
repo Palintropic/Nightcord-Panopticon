@@ -252,8 +252,8 @@ class RefusalTests(SsoTestCase):
         self.assertRefused(self.get(f"/auth/callback?code=abc&state={q['state']}"), "expired")
 
     def test_error_from_sso(self):
-        self.start()
-        self.assertRefused(self.get("/auth/callback?error=access_denied&state=x"), "cancelled")
+        q = self.start()
+        self.assertRefused(self.get(f"/auth/callback?error=access_denied&state={q['state']}"), "cancelled")
 
     def test_wrong_nonce(self):
         self.idp.override = {"nonce": "other"}
@@ -289,6 +289,64 @@ class RefusalTests(SsoTestCase):
         with mock.patch.object(sso.requests, "get", down):
             resp = self.get("/auth/login")
         self.assertEqual(resp.headers["Location"], "/login?sso_error=unavailable")
+
+
+class ReviewFixTests(SsoTestCase):
+    def test_sso_on_requires_sign_in_even_with_dashboard_auth_off(self):
+        cfg = self.config()
+        cfg["dashboard_auth"]["enabled"] = False
+        self.write_config(cfg)
+        for path in ("/api/status", "/api/me", "/api/config", "/api/webauthn/register/options", "/api/agent/hosts"):
+            self.assertEqual(self.get(path).status_code, 401, path)
+        self.assertEqual(self.client.post("/api/webauthn/register/verify", base_url=SITE, json={}).status_code, 401)
+
+    def test_half_filled_sso_section_still_requires_sign_in(self):
+        cfg = self.config(client_secret="")
+        cfg["dashboard_auth"]["enabled"] = False
+        self.write_config(cfg)
+        self.assertEqual(self.get("/api/status").status_code, 401)
+
+    def test_two_tabs_signing_in_do_not_cancel_each_other(self):
+        first = self.start()
+        self.start()
+        self.idp.nonce = first["nonce"]
+        resp = self.get(f"/auth/callback?code=abc&state={first['state']}")
+        self.assertEqual(resp.headers["Location"], "/")
+        self.assertEqual(self.get("/api/me").get_json()["role"], "superadmin")
+
+    def test_pending_login_runs_out(self):
+        q = self.start()
+        later = time.time() + sso.PENDING_MAX_AGE + 1
+        with mock.patch.object(app.time, "time", lambda: later):
+            resp = self.get(f"/auth/callback?code=abc&state={q['state']}")
+        self.assertEqual(resp.headers["Location"], "/login?sso_error=expired")
+
+    def test_plain_http_issuer_is_refused(self):
+        self.write_config(self.config(issuer="http://account.example/"))
+        self.assertEqual(self.get("/auth/login").headers["Location"], "/login?sso_error=failed")
+        self.assertEqual(self.idp.token_requests, [])
+
+    def test_token_endpoint_on_another_origin_is_refused(self):
+        evil = dict(DISCOVERY, token_endpoint="http://attacker.example/token")
+        with mock.patch.object(sso.requests, "get", lambda url, timeout=None: Resp(200, evil)):
+            self.assertEqual(self.get("/auth/login").headers["Location"], "/login?sso_error=failed")
+
+    def test_wrong_azp_with_a_single_audience(self):
+        self.idp.override = {"azp": "someone-else"}
+        resp = self.sign_in()
+        self.assertEqual(resp.headers["Location"], "/login?sso_error=failed")
+
+    def test_cookie_is_secure_over_https_only(self):
+        resp = self.client.post("/login", base_url=SITE, json={"username": "mizuki", "password": "pw"})
+        self.assertIn("Secure", resp.headers["Set-Cookie"])
+        resp = self.client.post("/login", base_url="http://10.10.0.1:1810", json={"username": "mizuki", "password": "pw"})
+        self.assertNotIn("Secure", resp.headers["Set-Cookie"])
+
+    def test_local_session_lasts_twelve_hours(self):
+        self.client.post("/login", base_url=SITE, json={"username": "mizuki", "password": "pw"})
+        later = time.time() + app.LOCAL_SESSION_SECONDS + 1
+        with mock.patch.object(app.time, "time", lambda: later):
+            self.assertEqual(self.get("/api/status").status_code, 401)
 
 
 class LocalLoginTests(SsoTestCase):

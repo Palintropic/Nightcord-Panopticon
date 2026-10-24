@@ -128,19 +128,20 @@ dashboard_auth:
 
 ### 用 Palintropic 账户登录（SSO）
 
-开了 `dashboard_auth` 之后，可以再在 `config.yaml` 的 `sso` 段接上 Palintropic 账户（OIDC 授权码 + PKCE，
-机密 client）。开启后登录页最上面是「用 Palintropic 账户登录」，本地密码 / Passkey 降为应急入口。
+在 `config.yaml` 的 `sso` 段接上 Palintropic 账户（OIDC 授权码 + PKCE，机密 client）。开启后总要登录
+（不管 `dashboard_auth.enabled`），登录页最上面是「用 Palintropic 账户登录」，本地密码 / Passkey 降为应急入口。
 
 - 档位来自 ID token 的 `roles` 声明：`panopticon:superadmin` 什么都能做；`panopticon:admin` 只能看看板、
   机器详情和历史，设置、密钥、部署 / 移除 agent、移除机器一律 `403`。两档都没有的账户登不进来。
 - `roles` 声明整个缺失时拒绝登录（说明 SSO 那边的 token hook 没生效），不当成「没有权限」放过去。
 - ID token 验签名（只认 RS256 / ES256 / EdDSA）、`iss`、`aud`、`exp`、`nonce`；不拿 refresh token，
   access token 不当身份凭据。
-- 看板会话 `session_minutes`（默认 60 分钟）到期后回 SSO 重新授权，档位那时重新查一次，所以在 SSO
-  撤销档位后最迟这么久生效。Palintropic 的会话还在的话不用重新输密码。
-- 退出登录会顺带退出 Palintropic（需要填 `post_logout_redirect_uri`）。
+- 看板会话 `session_minutes`（默认 60 分钟）到期后，看板自动回 SSO 重新授权，档位那时重新查一次，所以在
+  SSO 撤销档位后最迟这么久生效。Palintropic 的会话还在的话不用重新输密码。
+- 退出登录会顺带退出 Palintropic（需要填 `post_logout_redirect_uri`，且那时连得上 SSO；连不上就只退出看板）。
+- issuer 必须是 https（本机 localhost 除外），discovery 给的各个地址必须跟 issuer 同源，client 密钥不会发到别处。
 - 回调地址只登记一个。从别的地址（比如 WireGuard 内网 IP）点账户登录，会先转到回调地址所在的域名。
-- 本地密码 / Passkey 登进来就是超级管理员：SSO 连不上时只有站长自己能进。
+- 本地密码 / Passkey 登进来就是超级管理员（SSO 连不上时只有站长自己能进），会话 12 小时。
 
 client 在 Palintropic 那边用 `bin/palid client` 建，`redirect_uri` 要跟那边登记的一字不差。
 

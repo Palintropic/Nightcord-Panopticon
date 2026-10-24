@@ -17,6 +17,7 @@ import time
 from urllib.parse import urlencode, urlsplit
 
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context, session, redirect, url_for
+from flask.sessions import SecureCookieSessionInterface
 from werkzeug.security import check_password_hash
 
 import sso
@@ -36,6 +37,16 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.yaml")
 app = Flask(__name__, static_folder=os.path.join(BASE_DIR, "static"))
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+
+class _SessionInterface(SecureCookieSessionInterface):
+    # 经 HTTPS 访问（包括受信反代转来的，见 auth.ForwardedProto）时 session cookie 带 Secure，
+    # 不会再从同一个域名的 http 地址发出去；WireGuard 内网直连的 http 照常能登录
+    def get_cookie_secure(self, app):
+        return request.is_secure
+
+
+app.session_interface = _SessionInterface()
 metrics_store.init_db()
 
 _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实际阈值以 config.yaml 为准（见 enforce_auth）
@@ -52,6 +63,8 @@ PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_op
 ADMIN_ENDPOINTS = {"index", "api_me", "api_status", "api_metrics_history", "api_metrics_version",
                    "api_get_appearance", "api_get_kaomoji"}
 ROLES = (sso.ROLE_SUPERADMIN, sso.ROLE_ADMIN)
+LOCAL_SESSION_SECONDS = 12 * 3600  # 本地应急登录的会话时长，到期重新登录
+SSO_PENDING_MAX = 4  # 同一个浏览器里同时进行中的账户登录（多开标签页）最多留几个
 
 # 远程数据源（拉取模式的 Nightcord-Status）的采集结果缓存。远程采集可能很慢（对面没响应要等到
 # 超时），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
@@ -135,8 +148,8 @@ app.wsgi_app = ForwardedProto(app.wsgi_app, _current_trusted_proxies)
 @app.before_request
 def enforce_auth():
     """
-    Dashboard 按设计要长期暴露公网，所以给所有路由加一层登录门槛（密码 + 可选 Passkey），
-    并按来源 IP 做暴力破解锁定。dashboard_auth.enabled 为 false（默认）时不做任何限制，
+    Dashboard 按设计要长期暴露公网，所以给所有路由加一层登录门槛（Palintropic 账户 / 密码 / Passkey），
+    并按来源 IP 做暴力破解锁定。dashboard_auth.enabled 为 false（默认）且没开 SSO 时不做任何限制，
     适合只在 WireGuard 内网访问、不打算公网暴露的部署方式。
     """
     if request.path == METRICS_REPORT_PATH:
@@ -149,8 +162,7 @@ def enforce_auth():
         cfg = load_config()
     except RuntimeError:
         return  # 还没配置 config.yaml，让后续逻辑走正常的报错路径
-    auth_cfg = cfg.get("dashboard_auth", {})
-    if not auth_cfg.get("enabled"):
+    if not _login_required(cfg):
         return
 
     if request.endpoint in PUBLIC_ENDPOINTS or request.endpoint == "static":
@@ -166,6 +178,15 @@ def enforce_auth():
         return redirect(url_for("index"))
 
 
+def _login_required(cfg):
+    """
+    开了 SSO 就一定要登录，不管 dashboard_auth.enabled 怎么写：不然 sso 段开着、登录验证忘了开时，
+    看板对谁都敞开，连本地 Passkey 都能被路人注册上，再用它登录成超管。
+    看的是 sso.enabled 本身，没填全也算——填了一半更不能当成没开。
+    """
+    return bool((cfg.get("dashboard_auth") or {}).get("enabled") or (cfg.get("sso") or {}).get("enabled"))
+
+
 def _session_role():
     """当前会话的档位；没登录或者 SSO 会话到期了返回 None。"""
     role = session.get("role")
@@ -173,7 +194,7 @@ def _session_role():
         return None
     expires = session.get("expires")
     if expires is not None and time.time() >= expires:
-        session.clear()  # 到期了回 SSO 重新授权，档位重新查一次
+        session.clear()  # 到期了重新登录；SSO 登录的档位那时重新查一次
         return None
     return role
 
@@ -183,6 +204,7 @@ def _sign_in_locally():
     session.clear()
     session["role"] = sso.ROLE_SUPERADMIN
     session["via"] = "local"
+    session["expires"] = time.time() + LOCAL_SESSION_SECONDS
     session.permanent = True
 
 
@@ -272,13 +294,27 @@ def sso_login():
         print(f"[sso] 发起登录失败: {e.detail}")
         return redirect(url_for("login_page", sso_error=e.code))
     pending["next"] = nxt if _RETURN_HASH.match(nxt) else ""
-    session["sso_pending"] = pending
+    # 按 state 各存一份，同一个浏览器开两个标签页登录不会互相顶掉；过期的和太多的丢掉
+    pendings = _live_pendings()
+    pendings[pending["state"]] = pending
+    session["sso_pending"] = dict(sorted(pendings.items(), key=lambda kv: kv[1]["ts"])[-SSO_PENDING_MAX:])
     return redirect(url)
+
+
+def _live_pendings():
+    stored = session.get("sso_pending")
+    if not isinstance(stored, dict):
+        return {}
+    now = time.time()
+    return {state: p for state, p in stored.items()
+            if isinstance(p, dict) and now - float(p.get("ts") or 0) <= sso.PENDING_MAX_AGE}
 
 
 @app.route("/auth/callback")
 def sso_callback():
-    pending = session.pop("sso_pending", None)
+    pendings = _live_pendings()
+    pending = pendings.pop(request.args.get("state") or "", None)  # 每个 state 只能用一次
+    session["sso_pending"] = pendings
     settings = _sso_settings()
     if settings is None:
         return redirect(url_for("login_page"))
@@ -299,7 +335,7 @@ def sso_callback():
 
 @app.route("/api/me")
 def api_me():
-    """看板用来决定显示哪些东西。没开登录验证时谁都是超管。"""
+    """看板用来决定显示哪些东西。不要求登录时谁都是超管（要求登录时没登录的到不了这里）。"""
     role = _session_role() or sso.ROLE_SUPERADMIN
     return jsonify({"role": role, "via": session.get("via", ""), "name": session.get("name", "")})
 

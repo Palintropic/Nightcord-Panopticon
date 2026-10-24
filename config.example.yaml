@@ -35,11 +35,13 @@ dashboard_auth:
   # 本机 127.0.0.1 / ::1 总是信任。设置页不改这一项，保存设置也不会抹掉它。
   # trusted_proxies: ["10.10.0.3"]
 
-# 用 Palintropic 账户登录（OIDC）。要先开 dashboard_auth.enabled，并且设好上面的本地密码：
-# SSO 连不上时本地密码 / Passkey 是应急入口，登进来就是超级管理员。
+# 用 Palintropic 账户登录（OIDC）。这一段开着就总要登录，dashboard_auth.enabled 写 false 也一样。
+# 上面的本地密码最好也设好：SSO 连不上时本地密码 / Passkey 是应急入口，登进来就是超级管理员，
+# 12 小时后要重新登录。
 # 档位由 Palintropic 发：panopticon:superadmin 什么都能做；panopticon:admin 只能看看板和历史，
 # 进不了设置、看不到密钥、不能部署或移除 agent。没有这两档的账户登不进来。
 # client 在 Palintropic 那边用 `bin/palid client` 建，redirect_uri 要跟那边登记的一字不差。
+# issuer 要是 https（本机 localhost 开发除外）；discovery 里的各个地址必须跟 issuer 同源。
 # 这一段只能手改 config.yaml，设置页不显示密钥，保存设置也不会动它。
 sso:
   enabled: false

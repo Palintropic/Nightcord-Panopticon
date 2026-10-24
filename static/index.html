@@ -461,6 +461,18 @@ async function loadMe(){
   render(route().view === 'settings');
 }
 
+// The session ran out (or was revoked): drop what is on screen and sign in again, back to the same
+// place. A Palintropic session goes straight back through SSO, which is silent while that is live.
+function signInAgain(){
+  lastData = null;
+  document.getElementById('content').innerHTML = '';
+  document.getElementById('settingsView').hidden = true;
+  const hash = /^#(p=\d+|s=\w+|m=[^#\s]+)$/.test(location.hash) ? location.hash : '';
+  location.replace(me && me.via === 'sso'
+    ? '/auth/login' + (hash ? '?next=' + encodeURIComponent(hash) : '')
+    : '/login' + hash);
+}
+
 // #p=<n> top-level pivot item, #m=<name> machine detail, #s=<key> settings page.
 function route(){
   const s = location.hash.match(/^#s=(\w+)$/);
@@ -1088,7 +1100,9 @@ async function refresh(animate){
   const seq = ++statusSeq;
   let data;
   try{
-    data = (await fetchJsonWithTimeout('/api/status', 10000)).data;
+    const r = await fetchJsonWithTimeout('/api/status', 10000);
+    if(r.status === 401){ signInAgain(); return; }
+    data = r.data;
   }catch(e){
     if(seq === statusSeq){ refreshFailed = true; renderStatusBar(); }
     return;

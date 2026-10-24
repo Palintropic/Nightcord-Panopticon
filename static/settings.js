@@ -442,7 +442,7 @@ async function load(){
   document.getElementById('authLockout').value = da.lockout_seconds || 900;
   document.getElementById('authPasswordHint').textContent = da.has_password ? '已设置密码（留空保持不变）' : '还没设置密码';
   document.getElementById('ssoState').textContent = cfg.sso_enabled
-    ? '已开启。谁能进、是哪一档在 Palintropic 那边分配；下面的密码和 Passkey 是 SSO 连不上时的应急入口，登进来就是超级管理员。'
+    ? '已开启。谁能进、是哪一档在 Palintropic 那边分配；开着时总要登录，下面「开启登录验证」关了也一样。密码和 Passkey 是 SSO 连不上时的应急入口，登进来就是超级管理员，12 小时后要重新登录。'
     : '没开。在 config.yaml 的 sso 段填好 client 后开启（见 SETUP）。';
 
   const notif = cfg.notifications || {};

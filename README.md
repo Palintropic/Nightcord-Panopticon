@@ -140,9 +140,9 @@ If you only ever access Panopticon from inside WireGuard and don't plan to expos
 
 ### Sign in with a Palintropic account (SSO)
 
-With `dashboard_auth` on, the `sso` section of `config.yaml` adds Palintropic accounts (OIDC authorization
-code + PKCE, confidential client). The login page then leads with "用 Palintropic 账户登录", and the local
-password / Passkey become the fallback.
+The `sso` section of `config.yaml` adds Palintropic accounts (OIDC authorization code + PKCE, confidential
+client). With it on, signing in is always required (whatever `dashboard_auth.enabled` says), the login page
+leads with "用 Palintropic 账户登录", and the local password / Passkey become the fallback.
 
 - The tier comes from the ID token's `roles` claim: `panopticon:superadmin` can do everything;
   `panopticon:admin` sees the dashboard, machine details and history, and gets `403` on settings, secrets,
@@ -151,12 +151,16 @@ password / Passkey become the fallback.
   read as "no tier".
 - The ID token's signature (RS256 / ES256 / EdDSA only), `iss`, `aud`, `exp` and `nonce` are checked; no
   refresh token is requested and the access token is never used as proof of identity.
-- After `session_minutes` (default 60) the dashboard session goes back to SSO, which looks the tier up
+- After `session_minutes` (default 60) the dashboard goes back to SSO on its own, which looks the tier up
   again, so a revoked tier takes effect within that time. A live Palintropic session makes this silent.
-- Signing out also signs out of Palintropic (needs `post_logout_redirect_uri`).
+- Signing out also signs out of Palintropic (needs `post_logout_redirect_uri` and SSO being reachable at the
+  time; otherwise only the dashboard session ends).
+- The issuer must be https (localhost excepted) and every discovery address must share its origin, so the
+  client secret is never sent anywhere else.
 - Only one callback address is registered. Starting the account sign-in from another address (e.g. the
   WireGuard IP) first moves to the callback's host.
-- The local password / Passkey sign in as superadmin: when SSO is unreachable only the site owner gets in.
+- The local password / Passkey sign in as superadmin (when SSO is unreachable only the site owner gets in),
+  for 12 hours.
 
 Create the client on the Palintropic side with `bin/palid client`; `redirect_uri` must match what is
 registered there exactly.

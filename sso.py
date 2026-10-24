@@ -63,6 +63,12 @@ def origin_of(url):
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def _https_or_loopback(url):
+    """client 密钥只能发到 https，本机开发（localhost / 127.0.0.1）例外。"""
+    parts = urlsplit(url)
+    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in ("localhost", "127.0.0.1", "::1"))
+
+
 def _b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -80,6 +86,8 @@ class Provider:
             hit = self._discovery.get(issuer)
             if hit and time.time() - hit[0] < DISCOVERY_TTL:
                 return hit[1]
+        if not _https_or_loopback(issuer):
+            raise SsoError("failed", f"issuer must be https: {issuer}")
         url = issuer.rstrip("/") + "/.well-known/openid-configuration"
         try:
             resp = requests.get(url, timeout=HTTP_TIMEOUT)
@@ -90,9 +98,15 @@ class Provider:
         # 配置里写不写末尾的 / 都行，但 discovery 自己报的 issuer 必须是同一个，后面验 iss 用它的原文
         if not isinstance(doc, dict) or str(doc.get("issuer", "")).rstrip("/") != issuer.rstrip("/"):
             raise SsoError("failed", f"discovery issuer mismatch: {doc.get('issuer') if isinstance(doc, dict) else doc!r}")
+        # 各个地址都得跟 issuer 同源：discovery 被篡改或写错时，不能把 client 密钥发到别处、
+        # 也不能从别处拿验签公钥
         for key in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
-            if not isinstance(doc.get(key), str) or not doc[key].startswith(("https://", "http://")):
-                raise SsoError("failed", f"discovery lacks {key}")
+            value = doc.get(key)
+            if not isinstance(value, str) or origin_of(value) != origin_of(issuer):
+                raise SsoError("failed", f"discovery {key} not on the issuer's origin: {value!r}")
+        end_session = doc.get("end_session_endpoint")
+        if end_session is not None and (not isinstance(end_session, str) or origin_of(end_session) != origin_of(issuer)):
+            raise SsoError("failed", f"discovery end_session_endpoint not on the issuer's origin: {end_session!r}")
         with self._lock:
             self._discovery[issuer] = (time.time(), doc)
         return doc
@@ -230,7 +244,8 @@ def verify_id_token(settings, doc, id_token, nonce):
     if not nonce or not secrets.compare_digest(str(claims.get("nonce", "")).encode(), nonce.encode()):
         raise SsoError("failed", "id_token nonce mismatch")
     aud = claims.get("aud")
-    if isinstance(aud, list) and len(aud) > 1 and claims.get("azp") != settings["client_id"]:
+    multi = isinstance(aud, list) and len(aud) > 1
+    if (multi or "azp" in claims) and claims.get("azp") != settings["client_id"]:
         raise SsoError("failed", "id_token azp mismatch")
     if not isinstance(claims.get("sub"), str) or not claims["sub"]:
         raise SsoError("failed", "id_token without sub")
