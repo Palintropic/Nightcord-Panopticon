@@ -35,6 +35,24 @@ dashboard_auth:
   # 本机 127.0.0.1 / ::1 总是信任。设置页不改这一项，保存设置也不会抹掉它。
   # trusted_proxies: ["10.10.0.3"]
 
+# 用 Palintropic 账户登录（OIDC）。要先开 dashboard_auth.enabled，并且设好上面的本地密码：
+# SSO 连不上时本地密码 / Passkey 是应急入口，登进来就是超级管理员。
+# 档位由 Palintropic 发：panopticon:superadmin 什么都能做；panopticon:admin 只能看看板和历史，
+# 进不了设置、看不到密钥、不能部署或移除 agent。没有这两档的账户登不进来。
+# client 在 Palintropic 那边用 `bin/palid client` 建，redirect_uri 要跟那边登记的一字不差。
+# 这一段只能手改 config.yaml，设置页不显示密钥，保存设置也不会动它。
+sso:
+  enabled: false
+  issuer: "https://account.palintropic.cn/"
+  client_id: ""
+  client_secret: ""
+  redirect_uri: "https://panopticon.palintropic.cn/auth/callback"
+  # 退出时也退出 Palintropic，然后回到这里；不填就只退出看板
+  post_logout_redirect_uri: "https://panopticon.palintropic.cn/login"
+  # 看板会话多久后回 SSO 重新授权（档位在那时重新查一次，撤销最迟这么久后生效）。
+  # Palintropic 的会话还在的话，重新授权不用再输密码。
+  session_minutes: 60
+
 # 自建监控 agent（agent/metrics_agent.py，跑在各台服务器上）上报系统指标历史的接收端配置。
 # agent 侧的 agent_config.yaml 里 shared_secret 要跟这里填的一致。
 metrics_agent:

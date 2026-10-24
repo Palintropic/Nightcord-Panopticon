@@ -286,6 +286,10 @@
     <!-- 登录 -->
     <section class="page" data-page="login" hidden>
       <div class="group">
+        <div class="group-header">Palintropic 账户</div>
+        <div class="description" id="ssoState"></div>
+      </div>
+      <div class="group">
         <div class="group-header">密码</div>
         <div class="description">看板如果要公网暴露，务必开启。密码留空表示不修改。</div>
         <label class="check"><input type="checkbox" id="authEnabled"> 开启登录验证</label>
@@ -444,11 +448,24 @@ const SETTINGS_PAGES = [
   {key:'deploy', label:'部署', hint:'一键给服务器装青源 agent'},
   {key:'login', label:'登录', hint:'密码、Passkey'},
 ];
+// Who is signed in (/api/me). Settings are for superadmins only; until the answer is in, they
+// stay closed so a general admin never fires the settings requests the server would refuse.
+let me = null;
+function isSuperadmin(){ return !!me && me.role === 'superadmin'; }
+async function loadMe(){
+  try{
+    const res = await fetch('/api/me');
+    if(res.ok) me = await res.json();
+  }catch(e){ return; }
+  // A bookmarked #s=<page> only resolves now, so open it as freshly opened (its forms load).
+  render(route().view === 'settings');
+}
+
 // #p=<n> top-level pivot item, #m=<name> machine detail, #s=<key> settings page.
 function route(){
   const s = location.hash.match(/^#s=(\w+)$/);
   const key = s && (s[1] === 'appearance' ? 'theme' : s[1]);   // 外观 became 主题
-  if(key && SETTINGS_PAGES.some(x => x.key === key)) return {view:'settings', page:key};
+  if(key && SETTINGS_PAGES.some(x => x.key === key) && isSuperadmin()) return {view:'settings', page:key};
   if(key) return {view:'list', pivot:SETTINGS_PIVOT};   // a page that no longer exists, e.g. #s=panels
   const m = location.hash.match(/^#m=(.*)$/);
   if(m){
@@ -460,6 +477,7 @@ function route(){
 }
 
 function settingsList(){
+  if(!isSuperadmin()) return `<div class="empty-hint">${me ? '设置只对超级管理员开放。' : '加载中…'}</div>`;
   const firstRun = window.panopticonSettings && window.panopticonSettings.firstRun;
   const banner = firstRun ? `<div class="notice" style="max-width:760px">
       这是首次配置：先到「登录」设好密码，再到「部署」给机器装青源 agent。
@@ -529,7 +547,7 @@ function render(animate){
     headers.innerHTML = TOP_PIVOTS.map((pv, i) =>
       `<button class="pivot-header-item" role="tab" aria-selected="${i === r.pivot}" data-pivot="${i}">${pv.label}</button>`).join('');
     html = TOP_PIVOTS[r.pivot].render();
-    if(r.pivot === SETTINGS_PIVOT && window.panopticonSettings) window.panopticonSettings.ensureLoaded();
+    if(r.pivot === SETTINGS_PIVOT && isSuperadmin() && window.panopticonSettings) window.panopticonSettings.ensureLoaded();
   }
   content.innerHTML = `<div${animate && !reduceMotion.matches ? ' class="entering"' : ''}>${html}</div>`;
   if(r.view === 'detail'){
@@ -1097,10 +1115,12 @@ async function refresh(animate){
 }
 document.getElementById('refresh').addEventListener('click', () => refresh(false));
 document.getElementById('logout').addEventListener('click', async () => {
-  await fetch('/logout', {method:'POST'});
-  location.href = '/login';
+  // Signed in through Palintropic: the answer names the SSO sign-out, which comes back to /login.
+  const data = await fetch('/logout', {method:'POST'}).then(r => r.json()).catch(() => ({}));
+  location.href = data.redirect || '/login';
 });
 
+loadMe();
 loadKaomoji();
 loadAppearance();
 

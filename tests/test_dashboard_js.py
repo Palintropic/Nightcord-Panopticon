@@ -36,6 +36,9 @@ class DashboardStatusBarTests(unittest.TestCase):
         self.assertEqual(routes["#s=panels"], {"view": "list", "pivot": 5})
         self.assertEqual(routes["#s=bogus"], {"view": "list", "pivot": 5})
 
+    def test_general_admin_never_opens_a_settings_page(self):
+        self.assertEqual(self.steps["adminRoute"], {"view": "list", "pivot": 5})
+
     def _row(self, name):
         rows = self.steps["machines"].split('class="machine-row"')
         return next(r for r in rows if f'<span class="name">{name}</span>' in r)

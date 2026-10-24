@@ -10,12 +10,16 @@ import hmac
 import json
 import os
 import queue
+import re
 import secrets
 import threading
 import time
+from urllib.parse import urlencode, urlsplit
+
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context, session, redirect, url_for
 from werkzeug.security import check_password_hash
 
+import sso
 import webauthn_manager as wam
 from nightcord_status_client import NightcordStatusClient
 from notifier import Notifier, evaluate_status_alerts, format_duration, nightcord_target_key_prefix, plan_agent_alerts
@@ -40,7 +44,14 @@ _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实�
 # setup_page / settings_page 只回一段固定的转发脚本（见 _SETTINGS_FORWARD），不带任何数据；放行是为了
 # 让旧书签的 #s=... 先在浏览器里转成看板地址，没登录的话再由看板被踢去登录页，# 后面那段一路带着。
 PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify",
-                    "setup_page", "settings_page"}
+                    "setup_page", "settings_page", "sso_login", "sso_callback", "api_login_methods"}
+
+# 登录后分两档（见 sso.py）：超级管理员什么都能做；一般管理员只能看——下面这些是一般管理员能进的，
+# 其余（设置、密钥、部署 / 移除 agent、移除机器、本地 Passkey 管理）一律只给超管。
+# 用白名单而不是黑名单：以后新加的接口默认只有超管能用，忘了归类也不会漏给一般管理员。
+ADMIN_ENDPOINTS = {"index", "api_me", "api_status", "api_metrics_history", "api_metrics_version",
+                   "api_get_appearance", "api_get_kaomoji"}
+ROLES = (sso.ROLE_SUPERADMIN, sso.ROLE_ADMIN)
 
 # 远程数据源（拉取模式的 Nightcord-Status）的采集结果缓存。远程采集可能很慢（对面没响应要等到
 # 超时），所以 /api/status 从不当场等它：直接用缓存，过期了就在后台刷新
@@ -144,11 +155,35 @@ def enforce_auth():
 
     if request.endpoint in PUBLIC_ENDPOINTS or request.endpoint == "static":
         return
-    if session.get("authed"):
-        return
-    if request.path.startswith("/api/"):
-        return jsonify({"error": "未登录"}), 401
-    return redirect(url_for("login_page"))
+    role = _session_role()
+    if role is None:
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "未登录"}), 401
+        return redirect(url_for("login_page"))
+    if role != sso.ROLE_SUPERADMIN and request.endpoint not in ADMIN_ENDPOINTS:
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "只有超级管理员能用"}), 403
+        return redirect(url_for("index"))
+
+
+def _session_role():
+    """当前会话的档位；没登录或者 SSO 会话到期了返回 None。"""
+    role = session.get("role")
+    if role not in ROLES:
+        return None
+    expires = session.get("expires")
+    if expires is not None and time.time() >= expires:
+        session.clear()  # 到期了回 SSO 重新授权，档位重新查一次
+        return None
+    return role
+
+
+def _sign_in_locally():
+    """本地密码 / Passkey 登录：SSO 挂了时的应急入口，只有站长自己有，所以直接是超管。"""
+    session.clear()
+    session["role"] = sso.ROLE_SUPERADMIN
+    session["via"] = "local"
+    session.permanent = True
 
 
 @app.route("/login", methods=["GET"])
@@ -182,16 +217,91 @@ def login_password():
         return jsonify({"error": "用户名或密码错误"}), 401
 
     _brute_force_guard.record_success(ip)
-    session.clear()
-    session["authed"] = True
-    session.permanent = True
+    _sign_in_locally()
     return jsonify({"ok": True})
 
 
 @app.route("/logout", methods=["POST"])
 def logout():
+    id_token = session.get("id_token") if session.get("via") == "sso" else None
     session.clear()
-    return jsonify({"ok": True})
+    url = None
+    if id_token:
+        try:
+            url = sso.logout_url(sso.settings_from(load_config()), id_token)
+        except RuntimeError:
+            url = None
+    # 有 redirect 时前端接着去 SSO 那边也退出，不然下次点「用 Palintropic 账户登录」会被直接放行
+    return jsonify({"ok": True, "redirect": url} if url else {"ok": True})
+
+
+# 登录页回来时可以带上看板的 #位置（跟 login.html 的 returnHash 同一个格式），别的一律不收，
+# 免得被拿去当开放跳转
+_RETURN_HASH = re.compile(r"^#(p=\d+|s=\w+|m=[^#\s]+)$")
+
+
+def _sso_settings():
+    try:
+        return sso.settings_from(load_config())
+    except RuntimeError:
+        return None
+
+
+@app.route("/api/login/methods")
+def api_login_methods():
+    """登录页用：要不要显示「用 Palintropic 账户登录」。"""
+    return jsonify({"sso": _sso_settings() is not None})
+
+
+@app.route("/auth/login")
+def sso_login():
+    settings = _sso_settings()
+    if settings is None:
+        return redirect(url_for("login_page"))
+    nxt = request.args.get("next", "")
+    # 回调地址只登记了一个（公网域名）。从别的地址（比如 WireGuard 内网 IP）打开的，先转到那个域名
+    # 再出发，否则 state 存在这个域名的 cookie 里，回来时那边的 cookie 里没有，登录必然失败。
+    # 只比主机名和端口：cookie 不分 http / https，反代没带对 X-Forwarded-Proto 时比协议会转个没完
+    target_origin = sso.origin_of(settings["redirect_uri"])
+    if request.host != urlsplit(target_origin).netloc:
+        query = f"?{urlencode({'next': nxt})}" if nxt else ""
+        return redirect(f"{target_origin}{url_for('sso_login')}{query}")
+    try:
+        url, pending = sso.begin(settings)
+    except sso.SsoError as e:
+        print(f"[sso] 发起登录失败: {e.detail}")
+        return redirect(url_for("login_page", sso_error=e.code))
+    pending["next"] = nxt if _RETURN_HASH.match(nxt) else ""
+    session["sso_pending"] = pending
+    return redirect(url)
+
+
+@app.route("/auth/callback")
+def sso_callback():
+    pending = session.pop("sso_pending", None)
+    settings = _sso_settings()
+    if settings is None:
+        return redirect(url_for("login_page"))
+    try:
+        who = sso.finish(settings, pending, request.args)
+    except sso.SsoError as e:
+        print(f"[sso] 登录被拒 ({e.code}): {e.detail}")
+        return redirect(url_for("login_page", sso_error=e.code))
+    session.clear()
+    session.update({
+        "role": who["role"], "via": "sso", "sub": who["sub"], "name": who["name"] or who["email"],
+        "id_token": who["id_token"], "expires": time.time() + settings["session_seconds"],
+    })
+    session.permanent = True
+    print(f"[sso] 登录: {who['sub']} ({who['email']}) 档位 {who['role']}")
+    return redirect("/" + pending.get("next", ""))
+
+
+@app.route("/api/me")
+def api_me():
+    """看板用来决定显示哪些东西。没开登录验证时谁都是超管。"""
+    role = _session_role() or sso.ROLE_SUPERADMIN
+    return jsonify({"role": role, "via": session.get("via", ""), "name": session.get("name", "")})
 
 
 @app.route("/api/webauthn/register/options", methods=["GET"])
@@ -317,9 +427,7 @@ def webauthn_login_verify():
 
     update_config(update_sign_count)
     _brute_force_guard.record_success(ip)
-    session.clear()
-    session["authed"] = True
-    session.permanent = True
+    _sign_in_locally()
     return jsonify({"ok": True})
 
 

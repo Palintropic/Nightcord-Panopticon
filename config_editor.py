@@ -9,6 +9,8 @@
 """
 from werkzeug.security import generate_password_hash
 
+from sso import settings_from
+
 SECRET_PLACEHOLDER = "••••••••"
 
 
@@ -55,6 +57,8 @@ def redact_for_display(cfg: dict) -> dict:
         "notifications": notifications,
         # 只读：设置页判断"是不是首次配置"用，这一段配置没有设置页 UI
         "nightcord_status_enabled": bool((cfg.get("nightcord_status") or {}).get("enabled")),
+        # 只读：sso 段只能手改 config.yaml（client 密钥不经过网页），保存设置时原样保留
+        "sso_enabled": settings_from(cfg) is not None,
     }
 
 

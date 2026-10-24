@@ -17,6 +17,7 @@
   .auth-submit{align-self:flex-start;min-width:120px;margin-top:var(--gutter)}   /* min width by eye */
   .divider{display:flex;align-items:center;gap:var(--gutter);color:var(--SystemBaseMedium);font:var(--type-caption)}
   .divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--SystemBaseLow)}
+  .auth-panel [hidden]{display:none}
   #msg{min-height:20px}
   #msg.err{color:var(--warn)} #msg.ok{color:var(--SystemBaseMedium)}
 </style>
@@ -26,6 +27,10 @@
   <div class="auth-panel">
     <div class="pivot-title">Panopticon</div>
     <h1>登录</h1>
+
+    <button class="btn btn-accent" id="ssoBtn" onclick="loginWithSso()" hidden>用 Palintropic 账户登录</button>
+
+    <div class="divider" id="localDivider" hidden>本地登录（应急）</div>
 
     <button class="btn btn-accent" id="passkeyBtn" onclick="loginWithPasskey()">使用 Passkey 登录</button>
 
@@ -69,6 +74,35 @@ function bufferToBase64url(buf){
 function returnHash(){
   return /^#(p=\d+|s=\w+|m=[^#\s]+)$/.test(location.hash) ? location.hash : '';
 }
+
+// Palintropic sign-in leaves the page, so the #part goes along as ?next= and comes back with it.
+function loginWithSso(){
+  const hash = returnHash();
+  location.href = '/auth/login' + (hash ? '?next=' + encodeURIComponent(hash) : '');
+}
+
+const SSO_ERRORS = {
+  cancelled: '在 Palintropic 那边取消了登录',
+  expired: '登录等太久或者被打断了，再试一次',
+  denied: '这个账户没有 Panopticon 的权限，找超级管理员开',
+  no_roles: 'Palintropic 没有发来权限信息，暂时不能用账户登录。超级管理员可以用下面的本地登录',
+  unavailable: '连不上 Palintropic，过一会儿再试；超级管理员可以用下面的本地登录',
+  failed: '账户登录失败，再试一次',
+};
+
+// With Palintropic sign-in on, it is the main way in and the local forms become the fallback
+// (only the site owner has those credentials).
+(async function(){
+  const err = new URLSearchParams(location.search).get('sso_error');
+  if(err) showMsg(SSO_ERRORS[err] || SSO_ERRORS.failed, false);
+  try{
+    const methods = await fetch('/api/login/methods').then(r => r.json());
+    if(!methods.sso) return;
+    document.getElementById('ssoBtn').hidden = false;
+    document.getElementById('localDivider').hidden = false;
+    document.getElementById('passkeyBtn').classList.remove('btn-accent');
+  }catch(e){ /* stays on the local forms */ }
+})();
 
 async function loginWithPassword(e){
   e.preventDefault();
