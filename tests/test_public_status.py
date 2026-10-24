@@ -33,9 +33,13 @@ class PublicStatusTests(unittest.TestCase):
                 "nightcord_status": {"enabled": True, "name": "Nightcord-Status", "source": "push"},
             }, f)
         self.client = app.app.test_client()
-        p = mock.patch.object(app, "_refresh_remote_async", lambda: None)
+        self.refreshes = []
+        p = mock.patch.object(app, "_refresh_remote_async", lambda: self.refreshes.append(1))
         p.start()
         self.addCleanup(p.stop)
+        app._public_cache.update(at=0.0, body=None)
+        with app._remote_lock:
+            app._remote.update(data=None, ts=0, fp=None, refreshing=False, seq=0, stored_seq=0)
 
     def tearDown(self):
         app.CONFIG_PATH = self.old_config
@@ -48,7 +52,15 @@ class PublicStatusTests(unittest.TestCase):
         resp = self.client.post(app.METRICS_REPORT_PATH, json=body, headers={"X-Metrics-Secret": SECRET})
         self.assertEqual(resp.status_code, 200)
 
+    def write(self, **extra):
+        with open(app.CONFIG_PATH, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        cfg.update(extra)
+        with open(app.CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f)
+
     def public(self):
+        app._public_cache.update(at=0.0, body=None)
         resp = self.client.get("/api/public/status")
         self.assertEqual(resp.status_code, 200)
         return resp
@@ -74,6 +86,48 @@ class PublicStatusTests(unittest.TestCase):
         self.assertEqual(self.card("calm")["state"], "ok")
         self.assertEqual(self.card("near")["state"], "caution")
         self.assertEqual(self.card("full")["state"], "warn")
+
+    def test_threshold_edges_match_the_dashboard(self):
+        # index.html levelOf: >= threshold is warn, >= 70 is caution.
+        self.report("at-threshold", cpu=90)
+        self.report("at-seventy", cpu=70)
+        self.report("just-under", cpu=69.9)
+        self.assertEqual(self.card("at-threshold")["state"], "warn")
+        self.assertEqual(self.card("at-seventy")["state"], "caution")
+        self.assertEqual(self.card("just-under")["state"], "ok")
+
+    def test_the_worst_disk_counts(self):
+        self.report("disks", disk=10, disk_detail=[{"path": "/", "total": 1, "used": 0, "percent": 10},
+                                                   {"path": "/data", "total": 1, "used": 1, "percent": 86}])
+        self.assertEqual(self.card("disks")["state"], "warn")
+
+    def test_only_cards_and_their_faces_go_out(self):
+        self.report("tokyo")
+        self.write(kaomoji={"assign": {"tokyo": "爱莉", "retired-box": "绘名"},
+                            "faces": {"爱莉": ["a", "b", "c"], "绘名": ["d", "e", "f"], "secret-role": ["g", "h", "i"]}})
+        body = self.public().get_json()
+        self.assertEqual(set(body), {"panels", "kaomoji"})
+        self.assertEqual(body["kaomoji"], {"assign": {"tokyo": "爱莉"}, "faces": {"爱莉": ["a", "b", "c"]}})
+        self.assertEqual(self.client.get("/api/kaomoji").status_code, 401)
+
+    def test_anonymous_requests_never_start_a_remote_fetch(self):
+        self.write(nightcord_status={"enabled": True, "source": "pull", "url": "http://10.10.0.4:8702"})
+        for _ in range(3):
+            self.public()
+        self.assertEqual(self.refreshes, [])
+        self.client.get("/api/status")   # signed out: refused before it could start one either
+        self.assertEqual(self.refreshes, [])
+
+    def test_answers_are_reused_for_a_few_seconds(self):
+        self.report("tokyo")
+        self.public()
+        with mock.patch.object(app, "_qingyuan_cards", side_effect=AssertionError("database read")):
+            self.assertEqual(self.client.get("/api/public/status").status_code, 200)
+
+    def test_nightcord_status_without_pushes_reads_as_unreachable(self):
+        self.assertEqual(self.card("Nightcord-Status"),
+                         {"name": "Nightcord-Status", "kind": "nightcord-status", "online": False, "state": "warn",
+                          "nodata": False})
 
     def test_offline_machine_is_grey_and_needs_attention(self):
         self.report("gone")

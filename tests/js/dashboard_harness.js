@@ -40,8 +40,12 @@ const window = {
 const responses = [];   // queue of {data} or {fail: true}
 let role = 'superadmin';   // what /api/me answers; null = signed out (401)
 function fetch(url){
-  if(url === '/api/me') return Promise.resolve(role ? {ok: true, status: 200, json: async () => ({role})}
-                                                    : {ok: false, status: 401, json: async () => ({error: '未登录'})});
+  if(url === '/api/me'){
+    if(role === 'network') return Promise.reject(new Error('network down'));
+    if(role === 'broken') return Promise.resolve({ok: false, status: 500, json: async () => { throw new SyntaxError('html'); }});
+    return Promise.resolve(role ? {ok: true, status: 200, json: async () => ({role})}
+                                : {ok: false, status: 401, json: async () => ({error: '未登录'})});
+  }
   if(!url.startsWith('/api/status') && !url.startsWith('/api/public/status')) return Promise.resolve({ok: true, status: 200, json: async () => ({samples: []})});
   const next = responses.shift() || {fail: true};
   if(next.fail) return Promise.reject(new Error('network down'));
@@ -115,11 +119,20 @@ const summary = () => document.getElementById('statusSummary').textContent;
   responses.push({data: {ts: Date.now() / 1000, panels: [
     {name: 'tokyo', kind: 'qingyuan', online: true, state: 'caution', nodata: false},
     {name: 'gone', kind: 'qingyuan', online: false, state: 'warn', nodata: true},
-    {name: 'Nightcord-Status', kind: 'nightcord-status', online: true, state: 'ok', nodata: false}]}});
+    {name: 'Nightcord-Status', kind: 'nightcord-status', online: true, state: 'ok', nodata: false}],
+    kaomoji: {assign: {tokyo: '爱莉'}, faces: {'爱莉': ['PUBLIC-FACE', 'PUBLIC-NEAR', 'PUBLIC-BAD']}}}});
   await api.refresh(false); await tick();
   out.publicSummary = summary();
   out.publicOverview = api.overview();
   out.publicButton = document.getElementById('logout').textContent;
+  out.publicUpdated = document.getElementById('statusUpdated').textContent;
+  out.publicRedirect = location.replaced;
+
+  for(const failure of ['network', 'broken']){
+    role = 'superadmin'; await api.loadMe();
+    role = failure; await api.loadMe();
+    out['meFails_' + failure] = api.route();
+  }
 
   process.stdout.write(JSON.stringify(out));
 })();

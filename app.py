@@ -61,8 +61,8 @@ _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实�
 # 让旧书签的 #s=... 先在浏览器里转成看板地址，没登录的话再由看板被踢去登录页，# 后面那段一路带着。
 PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify",
                     "setup_page", "settings_page", "sso_login", "sso_callback", "api_login_methods",
-                    # 没登录也能看的第一面：看板页本身、只有名字和状态色的 Status、磁贴的颜色和颜文字
-                    "index", "api_public_status", "api_get_appearance", "api_get_kaomoji"}
+                    # 没登录也能看的第一面：看板页本身、只有名字和状态色的 Status（颜文字随它一起给）、磁贴的颜色
+                    "index", "api_public_status", "api_get_appearance"}
 
 # 登录后分两档（见 sso.py）：超级管理员什么都能做；一般管理员只能看——下面这些是一般管理员能进的，
 # 其余（设置、密钥、部署 / 移除 agent、移除机器、本地 Passkey 管理）一律只给超管。
@@ -701,14 +701,14 @@ def api_status():
     return jsonify({**_status_snapshot(cfg), "thresholds": _thresholds()})
 
 
-def _status_snapshot(cfg):
+def _status_snapshot(cfg, refresh=True):
     has_remote = bool((cfg.get("nightcord_status") or {}).get("enabled")) and not _nightcord_push_mode(cfg)
     now = time.time()
     with _remote_lock:
         remote, remote_ts, remote_fp = _remote["data"], _remote["ts"], _remote["fp"]
     if remote is not None and remote_fp != _remote_fingerprint(cfg):
         remote = None  # 缓存是按改之前的配置采的（可能是别的进程改的配置）
-    if remote is None or now - remote_ts >= CACHE_TTL:
+    if refresh and (remote is None or now - remote_ts >= CACHE_TTL):
         _refresh_remote_async()
     return {
         "panels": _with_qingyuan(remote or []),
@@ -755,19 +755,35 @@ def _public_card(p, th):
             "nodata": not online or all(v is None for v in values.values())}
 
 
+# 匿名请求谁都能发，不能让它驱动采集或者每次都扫一遍数据库：远程数据只读现有缓存（后台巡检每分钟会刷新），
+# 整个结果全局缓存几秒
+PUBLIC_CACHE_SECONDS = 5
+_public_cache = {"at": 0.0, "body": None}
+_public_lock = threading.Lock()
+
+
+def _public_kaomoji(cfg, names):
+    """只给看得到的这些机器的颜文字分配，以及它们用到的角色的表情；移除了的机器、没用上的角色都不给。"""
+    k = kaomoji_of(cfg)
+    assign = {m: c for m, c in k["assign"].items() if m in names}
+    return {"assign": assign, "faces": {c: f for c, f in k["faces"].items() if c in assign.values()}}
+
+
 @app.route("/api/public/status")
 def api_public_status():
-    try:
-        cfg = load_config()
-    except RuntimeError:
-        return jsonify({"error": "看板还没配置好"}), 400
-    snapshot = _status_snapshot(cfg)
-    th = _thresholds()
-    return jsonify({
-        "panels": [_public_card(p, th) for p in snapshot["panels"]],
-        "ts": snapshot["ts"],
-        "remote_pending": snapshot["remote_pending"],
-    })
+    now = time.time()
+    with _public_lock:
+        if _public_cache["body"] is not None and now - _public_cache["at"] < PUBLIC_CACHE_SECONDS:
+            return jsonify(_public_cache["body"])
+        try:
+            cfg = load_config()
+        except RuntimeError:
+            return jsonify({"error": "看板还没配置好"}), 400
+        th = _thresholds()
+        cards = [_public_card(p, th) for p in _status_snapshot(cfg, refresh=False)["panels"]]
+        body = {"panels": cards, "kaomoji": _public_kaomoji(cfg, {c["name"] for c in cards})}
+        _public_cache.update(at=now, body=body)
+        return jsonify(body)
 
 
 def _number(value, low, high, cast=float):

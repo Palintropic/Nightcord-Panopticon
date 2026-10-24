@@ -460,12 +460,14 @@ let me = null;
 // Not signed in: the first page only (machine names, online or not, rough state colour).
 let publicView = false;
 function isSuperadmin(){ return !!me && me.role === 'superadmin'; }
+// Anything short of a clear "signed in" shows the public page: a slow or failing /api/me must not
+// leave the page waiting, nor send it to the private status (which would bounce to the login page).
 async function loadMe(){
   try{
-    const res = await fetch('/api/me');
-    if(res.ok) me = await res.json();
-    publicView = res.status === 401;
-  }catch(e){ return; }
+    const r = await fetchJsonWithTimeout('/api/me', 5000, undefined, true);
+    if(r.ok) me = r.data;
+    publicView = !r.ok;
+  }catch(e){ publicView = true; }
   document.getElementById('logout').textContent = publicView ? '登录' : '退出登录';
   // A bookmarked #s=<page> only resolves now, so open it as freshly opened (its forms load).
   render(route().view === 'settings');
@@ -474,6 +476,7 @@ async function loadMe(){
 // The session ran out (or was revoked): drop what is on screen and sign in again, back to the same
 // place. A Palintropic session goes straight back through SSO, which is silent while that is live.
 function signInAgain(){
+  if(publicView) return;
   lastData = null;
   document.getElementById('content').innerHTML = '';
   document.getElementById('settingsView').hidden = true;
@@ -613,10 +616,11 @@ function renderStatusBar(){
   alert.textContent = `${attention} 需要关注`;
   const caution = ps.filter(p => cardState(p) === 'caution').length;
   // Notes sit next to the count, which stays visible at phone width.
-  const notes = [...staleNotes(), remoteNote()].filter(Boolean);
+  // Signed out there is no time and no 2702 collection state to show, only refresh failures.
+  const notes = publicView ? (refreshFailed ? ['刷新失败'] : []) : [...staleNotes(), remoteNote()].filter(Boolean);
   summary.textContent = [`${online} / ${machines.length} 在线`, caution ? `${caution} 接近阈值` : '', ...notes].filter(Boolean).join(' · ');
   summary.title = summary.textContent;
-  updated.textContent = '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
+  updated.textContent = publicView ? '' : '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
 }
 
 function noData(){
@@ -1096,12 +1100,12 @@ window.addEventListener('hashchange', () => {
 let tileBatch = 0;
 // The timeout covers reading the body too: a response whose headers arrive but whose body never
 // finishes is aborted as well. Resolves to {ok, status, data}.
-async function fetchJsonWithTimeout(url, ms, controller){
+async function fetchJsonWithTimeout(url, ms, controller, quiet401){
   controller = controller || new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try{
     const res = await fetch(url, {signal:controller.signal});
-    if(res.status === 401) signInAgain();   // whichever request notices first clears the screen
+    if(res.status === 401 && !quiet401) signInAgain();   // whichever request notices first clears the screen
     const data = await res.json();
     return {ok:res.ok, status:res.status, data};
   }finally{
@@ -1133,6 +1137,8 @@ async function refresh(animate){
     const r = await fetchJsonWithTimeout(publicView ? '/api/public/status' : '/api/status', 10000);
     if(r.status === 401){ signInAgain(); return; }
     data = r.data;
+    // Signed out, the colour-and-face assignments come with the cards, for the visible machines only.
+    if(publicView && data.kaomoji) kaomojiConfig = {assign:data.kaomoji.assign || {}, faces:data.kaomoji.faces || {}};
   }catch(e){
     if(seq === statusSeq){ refreshFailed = true; renderStatusBar(); }
     return;
@@ -1165,12 +1171,12 @@ document.getElementById('logout').addEventListener('click', async () => {
   location.href = data.redirect || (data.sso_signed_out === false ? '/login?sso_error=logout' : '/login');
 });
 
-loadKaomoji();
 loadAppearance();
 
 render(false);
 // Signed in or not decides which status to fetch, so that is known first.
 loadMe().then(() => {
+  if(!publicView) loadKaomoji();
   refresh(true);
   setInterval(() => refresh(false), REFRESH_MS);
 });
