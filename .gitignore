@@ -2,6 +2,7 @@ config.yaml
 metrics.db
 agent/agent_config.yaml
 agent_hosts.key
+terminal_ca
 __pycache__/
 *.pyc
 .venv/

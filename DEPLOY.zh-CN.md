@@ -146,7 +146,8 @@ Type=simple
 User=www-data
 WorkingDirectory=/path/to/nightcord-panopticon
 Environment=PATH=/path/to/nightcord-panopticon/.venv/bin
-ExecStart=/path/to/nightcord-panopticon/.venv/bin/gunicorn -w 2 -b 0.0.0.0:1810 app:app
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/path/to/nightcord-panopticon/.venv/bin/gunicorn -c gunicorn.conf.py app:app
 Restart=always
 RestartSec=5
 
@@ -154,13 +155,9 @@ RestartSec=5
 WantedBy=multi-user.target
 ```
 
-> 注意：Gunicorn 只提供 Web 服务；后台告警巡检需要单独起一个不监听 HTTP 端口的 worker：
-> ```ini
-> # 再建一个 nightcord-panopticon-alerts.service：
-> ExecStart=/path/to/nightcord-panopticon/.venv/bin/python worker.py
-> ```
-> `worker.py` 不会绑定 1810，因此能与 Gunicorn 同时运行。个人项目若直接用 `python app.py`，
-> Web 服务和后台线程会一起启动，不需要额外 worker。
+> `gunicorn.conf.py` 固定只开 **一个** worker 进程（多线程）：网页终端的一次性票、远程数据缓存、
+> 登录防爆破计数都在进程内存里，多个 worker 会各看各的。告警巡检、历史清理、终端审计重试这几个
+> 后台线程由它在 worker 里启动，不用另跑 `worker.py`。`PYTHONUNBUFFERED=1` 让日志马上进 journal。
 
 ```bash
 systemctl daemon-reload

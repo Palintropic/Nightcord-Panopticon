@@ -67,6 +67,36 @@ CREATE TABLE IF NOT EXISTS status_push (
   received_at INTEGER NOT NULL,
   body_json TEXT NOT NULL
 );
+
+-- 网页终端的每一次连接。ended_at 为空 = 还开着（或者进程崩溃时没来得及记结束，重启时补成 unknown）。
+-- 这里的记录能被开到上海本机的终端改掉，所以审计的正本是推到飞书 / Slack 的那份（见 audit_outbox）。
+CREATE TABLE IF NOT EXISTS terminal_sessions (
+  id TEXT PRIMARY KEY,
+  worker TEXT,
+  sub TEXT NOT NULL,
+  email TEXT,
+  host TEXT NOT NULL,
+  client_ip TEXT,
+  cert_serial TEXT,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  bytes_in INTEGER NOT NULL DEFAULT 0,
+  bytes_out INTEGER NOT NULL DEFAULT 0,
+  end_reason TEXT
+);
+
+-- 要推出去的审计消息。每个渠道各记一个完成标记，没推成的由后台重试，进程重启也不丢。
+-- event_id（会话号:种类）唯一，同一件事只进一次；claimed_until：正在推的进程占住这一行，别的进程不重复推。
+CREATE TABLE IF NOT EXISTS audit_outbox (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT,
+  created_at INTEGER NOT NULL,
+  event_json TEXT NOT NULL,
+  feishu_done INTEGER NOT NULL DEFAULT 0,
+  slack_done INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  claimed_until INTEGER
+);
 """
 
 
@@ -80,6 +110,11 @@ EXTRA_METRIC_COLUMNS = (
     ("tcp_established", "INTEGER"),
 )
 _EXTRA_NAMES = tuple(name for name, _ in EXTRA_METRIC_COLUMNS)
+LATER_TERMINAL_COLUMNS = (
+    ("terminal_sessions", "worker", "TEXT"),
+    ("audit_outbox", "event_id", "TEXT"),
+    ("audit_outbox", "claimed_until", "INTEGER"),
+)
 _SAMPLE_COLUMNS = ("ts", "cpu", "mem", "disk", "net_in_kbps", "net_out_kbps") + _EXTRA_NAMES
 
 
@@ -99,6 +134,13 @@ def init_db():
         for name, sql_type in EXTRA_METRIC_COLUMNS:
             if name not in metric_columns:
                 conn.execute(f"ALTER TABLE metrics ADD COLUMN {name} {sql_type}")
+        # 终端两张表后来加的列（开发中的库可能是旧结构）。event_id 的唯一性靠索引：SQLite 不能 ALTER 出 UNIQUE 列，
+        # 旧记录先回填成各不相同的 legacy:<id>
+        for table, name, sql_type in LATER_TERMINAL_COLUMNS:
+            if name not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+        conn.execute("UPDATE audit_outbox SET event_id = 'legacy:' || id WHERE event_id IS NULL")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_outbox_event ON audit_outbox(event_id)")
         # 升级前就在上报的机器还没有 agent_last_seen 记录，用历史里最新一条样本补上，
         # 否则它们要等下一次上报才会出现在"应该在线"的名单里。历史里的 ts 是 agent 自报的，
         # 时钟跑快的 agent 会留下未来时间，回填时封顶到现在，不然它停报后会一直显示在线
@@ -328,3 +370,95 @@ def get_status_push(source):
     if row is None:
         return None
     return row["received_at"], json.loads(row["body_json"])
+
+
+def _outbox_insert(conn, event_id, event, created_at):
+    cur = conn.execute("INSERT OR IGNORE INTO audit_outbox (event_id, created_at, event_json) VALUES (?, ?, ?)",
+                       (event_id, int(created_at), json.dumps(event, ensure_ascii=False)))
+    return cur.lastrowid if cur.rowcount else None
+
+
+def terminal_record_open(session_id, worker, sub, email, host, client_ip, cert_serial, started_at, event):
+    """记下打开，连同它的审计一起，一个事务：要么都有，要么都没有。返回 outbox 行号。出错直接抛。"""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO terminal_sessions (id, worker, sub, email, host, client_ip, cert_serial, started_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (session_id, worker, sub, email, host, client_ip, cert_serial, int(started_at)),
+        )
+        return _outbox_insert(conn, f"{session_id}:open", event, started_at)
+
+
+def terminal_record_close(session_id, ended_at, bytes_in, bytes_out, reason, event):
+    """
+    记下结束，连同它的审计一起，一个事务。已经记过结束的（别的进程先记了）什么都不做，返回 None；
+    否则返回 outbox 行号。
+    """
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE terminal_sessions SET ended_at=?, bytes_in=?, bytes_out=?, end_reason=?"
+            " WHERE id=? AND ended_at IS NULL",
+            (int(ended_at), int(bytes_in), int(bytes_out), reason, session_id),
+        )
+        if not cur.rowcount:
+            return None
+        return _outbox_insert(conn, f"{session_id}:close", event, ended_at)
+
+
+def terminal_unfinished(exclude_worker=None, started_before=None):
+    """没有记结束的会话。exclude_worker：本进程自己的不算；started_before：只看这之前开的。"""
+    sql, args = "SELECT * FROM terminal_sessions WHERE ended_at IS NULL", []
+    if exclude_worker is not None:
+        sql += " AND (worker IS NULL OR worker != ?)"
+        args.append(exclude_worker)
+    if started_before is not None:
+        sql += " AND started_at < ?"
+        args.append(int(started_before))
+    with _connect() as conn:
+        return [dict(r) for r in conn.execute(sql, args)]
+
+
+def terminal_history(sub=None, limit=100):
+    """最近的终端记录；给了 sub 就只看这个人的。"""
+    with _connect() as conn:
+        if sub is None:
+            rows = conn.execute("SELECT * FROM terminal_sessions ORDER BY started_at DESC LIMIT ?", (limit,))
+        else:
+            rows = conn.execute("SELECT * FROM terminal_sessions WHERE sub=? ORDER BY started_at DESC LIMIT ?",
+                                (sub, limit))
+        return [dict(r) for r in rows]
+
+
+def outbox_prune(cutoff):
+    """两边都推成功的旧记录删掉；没推成功的留着当证据。"""
+    with _connect() as conn:
+        conn.execute("DELETE FROM audit_outbox WHERE feishu_done=1 AND slack_done=1 AND created_at < ?",
+                     (int(cutoff),))
+
+
+def outbox_pending(max_attempts):
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM audit_outbox WHERE (feishu_done=0 OR slack_done=0) AND attempts < ? ORDER BY id",
+            (max_attempts,),
+        )
+        return [{**dict(r), "event": json.loads(r["event_json"])} for r in rows]
+
+
+def outbox_claim(row_id, now, lease):
+    """占住一行去推；别的进程正占着（租约没到期）就返回 False。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE audit_outbox SET claimed_until=? WHERE id=? AND (claimed_until IS NULL OR claimed_until < ?)",
+            (int(now + lease), row_id, int(now)),
+        )
+        return cur.rowcount > 0
+
+
+def outbox_mark(row_id, feishu_done, slack_done):
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE audit_outbox SET feishu_done=MAX(feishu_done, ?), slack_done=MAX(slack_done, ?),"
+            " attempts=attempts+1, claimed_until=NULL WHERE id=?",
+            (int(feishu_done), int(slack_done), row_id),
+        )

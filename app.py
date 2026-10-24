@@ -12,15 +12,20 @@ import os
 import queue
 import re
 import secrets
+import socket
 import threading
 import time
 from urllib.parse import urlencode, urlsplit
 
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context, session, redirect, url_for
 from flask.sessions import SecureCookieSessionInterface
+from flask_sock import Sock
+from simple_websocket import ConnectionClosed
 from werkzeug.security import check_password_hash
 
 import sso
+import terminal
+import terminal_ca
 import webauthn_manager as wam
 from nightcord_status_client import NightcordStatusClient
 from notifier import Notifier, evaluate_status_alerts, format_duration, nightcord_target_key_prefix, plan_agent_alerts
@@ -52,6 +57,7 @@ class _SessionInterface(SecureCookieSessionInterface):
 
 
 app.session_interface = _SessionInterface()
+sock = Sock(app)
 metrics_store.init_db()
 
 _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实际阈值以 config.yaml 为准（见 enforce_auth）
@@ -68,7 +74,9 @@ PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_op
 # 其余（设置、密钥、部署 / 移除 agent、移除机器、本地 Passkey 管理）一律只给超管。
 # 用白名单而不是黑名单：以后新加的接口默认只有超管能用，忘了归类也不会漏给一般管理员。
 ADMIN_ENDPOINTS = {"index", "api_me", "api_status", "api_metrics_history", "api_metrics_version",
-                   "api_get_appearance", "api_get_kaomoji"}
+                   "api_get_appearance", "api_get_kaomoji",
+                   # 网页终端：能开哪台由 SSO 的 ssh_hosts 决定，每次开都要重新验证（见 terminal_start）
+                   "api_terminal_hosts", "api_terminal_history", "terminal_start", "terminal_ws"}
 ROLES = (sso.ROLE_SUPERADMIN, sso.ROLE_ADMIN)
 LOCAL_SESSION_SECONDS = 12 * 3600  # 本地应急登录的会话时长，到期重新登录
 SSO_PENDING_MAX = 4  # 同一个浏览器里同时进行中的账户登录（多开标签页）最多留几个
@@ -217,6 +225,7 @@ def _sign_in_locally():
     session.clear()
     session["role"] = sso.ROLE_SUPERADMIN
     session["via"] = "local"
+    session["sid"] = secrets.token_urlsafe(16)
     if (load_config().get("sso") or {}).get("enabled"):
         session["expires"] = time.time() + LOCAL_SESSION_SECONDS
     session.permanent = True
@@ -341,19 +350,254 @@ def sso_callback():
     settings = _sso_settings()
     if settings is None:
         return redirect(url_for("login_page"))
+    step_up = isinstance(pending, dict) and pending.get("purpose") == "terminal"
     try:
         who = sso.finish(settings, pending, request.args)
     except sso.SsoError as e:
-        print(f"[sso] 登录被拒 ({e.code}): {e.detail}")
+        print(f"[sso] {'开终端前的重新验证' if step_up else '登录'}被拒 ({e.code}): {e.detail}")
+        if step_up:
+            session["terminal_error"] = e.code
+            return redirect(f"/#p={TERMINAL_PIVOT}")
         return redirect(url_for("login_page", sso_error=e.code))
+    if step_up:
+        return _finish_terminal_step_up(pending, who)
     session.clear()
     session.update({
         "role": who["role"], "via": "sso", "sub": who["sub"], "name": who["name"] or who["email"],
-        "id_token": who["id_token"], "expires": time.time() + settings["session_seconds"],
+        "email": who["email"], "id_token": who["id_token"], "expires": time.time() + settings["session_seconds"],
+        "sid": secrets.token_urlsafe(16),
     })
     session.permanent = True
     print(f"[sso] 登录: {who['sub']} ({who['email']}) 档位 {who['role']}")
     return redirect("/" + pending.get("next", ""))
+
+
+# ---------- 网页终端（设计见 terminal.py 开头） ----------
+TERMINAL_PIVOT = 3            # 看板上「终端」是第几个 Pivot（static/index.html 的 TOP_PIVOTS）
+STEP_UP_MAX_AGE = 300
+STEP_UP_SKEW = 30             # 秒：SSO 和这里的时钟差多少还认
+_tickets = terminal.Tickets()
+_terminals = terminal.Registry()
+_auditor = terminal.Auditor()
+
+
+@app.route("/auth/terminal", methods=["POST"])
+def terminal_start():
+    """
+    开终端：先回 SSO 用 passkey 重新验证。用 POST（看板的表单提交）：SameSite=Lax 的会话 cookie 不会随
+    别的网站发来的 POST 带过来，别人没法替你发起。本地应急登录开不了终端，它没有 SSO 可以重新验证。
+    """
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        cfg = {}
+    settings, term = sso.settings_from(cfg), terminal.settings_from(cfg)
+    host = request.form.get("host", "")
+    error = None
+    if settings is None or term is None or host not in term["hosts"]:
+        error = "unknown_host"
+    elif not _from_dashboard(settings):
+        error = "origin"
+    elif session.get("via") != "sso" or not session.get("sid") or not session.get("sub"):
+        error = "local_session"
+    if error:
+        session["terminal_error"] = error
+        return redirect(f"/#p={TERMINAL_PIVOT}", code=303)
+    try:
+        url, pending = sso.begin(settings, extra={"prompt": "login", "max_age": str(STEP_UP_MAX_AGE)})
+    except sso.SsoError as e:
+        print(f"[terminal] 发起重新验证失败: {e.detail}")
+        session["terminal_error"] = e.code
+        return redirect(f"/#p={TERMINAL_PIVOT}", code=303)
+    pending.update(purpose="terminal", host=host, sid=session["sid"], sub=session["sub"], next="")
+    pendings = _live_pendings()
+    pendings[pending["state"]] = pending
+    session["sso_pending"] = dict(sorted(pendings.items(), key=lambda kv: kv[1]["ts"])[-SSO_PENDING_MAX:])
+    return redirect(url, code=303)
+
+
+def _finish_terminal_step_up(pending, who):
+    """重新验证回来：同一个看板会话、同一个人、刚刚用 passkey 验过、这台机器分给了他，才发票。"""
+    error = None
+    if session.get("sid") != pending.get("sid") or session.get("sub") != pending.get("sub") \
+            or who["sub"] != pending.get("sub"):
+        error = "mismatch"
+    elif not who["amr"] or who["amr"][-1] != "passkey":
+        # amr 是这个 SSO 会话里按先后累计的验证方式，以前用过 passkey 不算数，要看最后这一次
+        error = "not_passkey"
+    elif who["auth_time"] is None or who["auth_time"] < float(pending.get("ts") or 0) - STEP_UP_SKEW \
+            or who["auth_time"] > time.time() + STEP_UP_SKEW:
+        error = "stale"
+    elif pending.get("host") not in who["ssh_hosts"]:
+        error = "host_denied"
+    if error:
+        print(f"[terminal] 重新验证不通过 ({error}): {who['sub']} → {pending.get('host')} amr={who['amr']}")
+        session["terminal_error"] = error
+        return redirect(f"/#p={TERMINAL_PIVOT}")
+    session["role"] = who["role"]  # 档位以这张刚发的 token 为准
+    session["terminal_ticket"] = _tickets.issue(session["sid"], who["sub"], who["email"], who["name"],
+                                                pending["host"])
+    return redirect(f"/#p={TERMINAL_PIVOT}")
+
+
+def _from_dashboard(settings):
+    """
+    请求是不是看板自己的页面发的：Origin（没有就看 Referer）必须是 SSO 回调所在的那个正式域名。
+    SameSite=Lax 已经挡住了别的网站带着会话 cookie 发 POST，这里再多一道。
+    """
+    expected = sso.origin_of(settings["redirect_uri"])
+    origin = request.headers.get("Origin")
+    if origin:
+        return origin == expected
+    return (request.headers.get("Referer") or "").startswith(expected + "/")
+
+
+@app.route("/api/terminal/hosts")
+def api_terminal_hosts():
+    """
+    「终端」页：配置里有哪些机器、有没有一张刚验过还没用的票（有就自动连上）、上一次失败的原因。
+    能不能开哪台在重新验证时才由 SSO 决定，这里不预判。
+    """
+    term = terminal.settings_from(load_config())
+    error = session.pop("terminal_error", None)
+    pending = _tickets.peek(session.get("terminal_ticket"), session.get("sid")) if term else None
+    if pending is None:
+        session.pop("terminal_ticket", None)  # 用掉或者过期了的票号不留在 cookie 里
+    return jsonify({
+        "enabled": term is not None,
+        "can_open": session.get("via") == "sso",
+        "hosts": [{"id": h["id"], "label": h["label"]} for h in (term or {}).get("hosts", {}).values()],
+        "pending": pending,
+        "error": error,
+    })
+
+
+@app.route("/api/terminal/history")
+def api_terminal_history():
+    """最近的终端记录：超管看所有人的，一般管理员只看自己的。"""
+    if _session_role() == sso.ROLE_SUPERADMIN:
+        rows = metrics_store.terminal_history()
+    else:
+        rows = metrics_store.terminal_history(sub=session.get("sub") or "")
+    keys = ("id", "email", "host", "client_ip", "started_at", "ended_at", "bytes_in", "bytes_out", "end_reason")
+    return jsonify({"sessions": [{k: r[k] for k in keys} for r in rows]})
+
+
+WS_LINGER = 2  # 秒
+
+
+def _ws_send_json(ws, **msg):
+    try:
+        ws.send(json.dumps(msg, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _ws_last_word(ws, **msg):
+    """
+    发最后一条消息（错误或结束），然后等浏览器自己关（最多 WS_LINGER 秒），把它发来的东西读掉。
+    simple_websocket 关连接时直接 close 底层 socket，要是浏览器的消息还没读走，内核会回 RST，
+    刚发出去的这条消息就可能到不了浏览器。
+    """
+    _ws_send_json(ws, **msg)
+    deadline = time.monotonic() + WS_LINGER
+    try:
+        while time.monotonic() < deadline:
+            ws.receive(timeout=max(0.05, deadline - time.monotonic()))
+    except Exception:
+        pass
+
+
+@sock.route("/api/terminal/ws")
+def terminal_ws(ws):
+    """
+    终端的 WebSocket。enforce_auth 已经挡掉了没登录的；这里再要求：同源（防跨站 WebSocket）、
+    会话里那张票还在而且属于这个会话，用掉它，然后签证书、连目标机、开始转发。
+    """
+    cfg = load_config()
+    settings = sso.settings_from(cfg)
+    if settings is None or request.headers.get("Origin") != sso.origin_of(settings["redirect_uri"]):
+        _ws_last_word(ws, t="error", code="origin")
+        return
+    term = terminal.settings_from(cfg)
+    entry = _tickets.take(session.get("terminal_ticket"), session.get("sid"))
+    if term is None or entry is None or session.get("via") != "sso" or session.get("sub") != entry["sub"]:
+        _ws_last_word(ws, t="error", code="no_ticket")
+        return
+    host = term["hosts"].get(entry["host"])
+    if host is None:
+        _ws_last_word(ws, t="error", code="unknown_host")
+        return
+    session_id = secrets.token_hex(8)
+    refused = _terminals.acquire(session_id, entry["sub"])
+    if refused:
+        _ws_last_word(ws, t="error", code=refused)
+        return
+    try:
+        _run_terminal(ws, cfg, term, host, entry, session_id)
+    finally:
+        _terminals.release(session_id)
+
+
+def _best_effort(what, fn, *args, **kwargs):
+    """收尾的每一步各自兜住：哪一步出错都不影响后面的释放和审计。"""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        print(f"[terminal] {what}失败: {e}")
+        return None
+
+
+def _run_terminal(ws, cfg, term, host, entry, session_id):
+    try:
+        first = json.loads(ws.receive(timeout=5) or "{}")
+    except (ValueError, TypeError, ConnectionClosed):
+        first = {}
+    if not isinstance(first, dict):
+        first = {}
+    cols, rows = terminal.clamp_size(first.get("cols"), first.get("rows"))
+    try:
+        key, serial = terminal_ca.issue(host["user"], f"{entry['sub']}/{host['id']}/{session_id}",
+                                        term["source_address"])
+    except Exception as e:
+        print(f"[terminal] 签证书失败: {e}")
+        _ws_last_word(ws, t="error", code="connect_failed")
+        return
+    client_ip = get_client_ip(request, trusted_proxies_from(cfg))
+    started = time.time()
+    base = {"session": session_id, "sub": entry["sub"], "email": entry["email"], "name": entry["name"],
+            "host": host["id"], "label": host["label"], "address": host["address"], "client_ip": client_ip}
+    # 先记「打开」（连同审计一个事务），记不上就不开：没有审计的终端不给开。推送失败不挡（另有后台重试）
+    try:
+        _auditor.open(cfg, session_id, entry["sub"], entry["email"], host["id"], client_ip, str(serial),
+                      {**base, "kind": "open", "at": started})
+    except Exception as e:
+        print(f"[terminal] 记录打开失败，不开终端: {e}")
+        _ws_last_word(ws, t="error", code="audit_failed")
+        return
+    print(f"[terminal] 打开 {session_id}: {entry['email']} → {host['id']} 来自 {client_ip}")
+    transport = chan = None
+    reason, bytes_in, bytes_out = "exit", 0, 0
+    try:
+        transport, chan = terminal.connect(host, key, term["source_address"], cols, rows)
+        _ws_send_json(ws, t="ready", host=host["label"])
+        reason, bytes_in, bytes_out = terminal.bridge(ws, chan, ConnectionClosed,
+                                                      abort=lambda: ws.sock.shutdown(socket.SHUT_RDWR))
+    except terminal.HostKeyMismatch as e:
+        print(f"[terminal] 主机指纹不对，没有连: {e}")
+        reason = "host_key_mismatch"
+    except Exception as e:
+        print(f"[terminal] 连接 {host['id']} 失败: {e}")
+        reason = "connect_failed"
+    finally:
+        for name, closable in (("关闭 SSH 通道", chan), ("关闭 SSH 连接", transport)):
+            if closable is not None:
+                _best_effort(name, closable.close)
+        ended = time.time()
+        _best_effort("记录结束", _auditor.close, cfg, {**base, "kind": "close", "at": ended, "duration": ended - started,
+                                                  "bytes_in": bytes_in, "bytes_out": bytes_out, "reason": reason})
+        print(f"[terminal] 关闭 {session_id}: {reason}")
+        _ws_last_word(ws, t="closed", reason=reason, text=terminal.END_REASONS.get(reason, reason))
 
 
 @app.route("/api/me")
@@ -1193,10 +1437,13 @@ def _deploy_and_report(ip, port, ssh_user, password, remember, panel_name_overri
                     f"建议先在 config.yaml 的 metrics_agent.report_url 里手动填一个 agent 那边"
                     f"能访问到的 Panopticon 地址（比如 WireGuard 内网地址），再重新部署。"
                 ))
+            pins = {(h["address"], h["port"]): (h["host_key_type"], h["host_key"])
+                    for h in ((terminal.settings_from(load_config()) or {}).get("hosts") or {}).values()}
             panel_name = deploy_agent(
                 ip, port, ssh_user, password, report_url, shared_secret,
                 log=lambda line: q.put(("log", line)),
                 panel_name_override=panel_name_override,
+                pinned_host_key=pins.get((ip, port)),
             )
             result["ok"], result["panel_name"] = True, panel_name
         except AgentDeployError as e:
@@ -1341,12 +1588,36 @@ def background_metrics_prune_loop():
         time.sleep(METRICS_PRUNE_INTERVAL)
 
 
+AUDIT_RETRY_INTERVAL = 60  # 秒
+AUDIT_OUTBOX_KEEP_SECONDS = 30 * 86400  # 推完的审计在本地 outbox 里留 30 天
+
+
+AUDIT_ORPHAN_GRACE = 30  # 秒：比 gunicorn 的 graceful_timeout 长，平滑重启时旧进程的终端那时已经各自记完结束
+
+
+def background_audit_loop():
+    """后台线程：上次没推出去的终端审计，每分钟重试一次；先替退出了的旧进程补记它留下的终端。"""
+    time.sleep(AUDIT_ORPHAN_GRACE)
+    try:
+        terminal.close_unfinished(_auditor, load_config())
+    except Exception as e:
+        print(f"[background_audit_loop] 补记未结束的终端出错: {e}")
+    while True:
+        try:
+            _auditor.deliver_pending(load_config())
+            metrics_store.outbox_prune(time.time() - AUDIT_OUTBOX_KEEP_SECONDS)
+        except Exception as e:
+            print(f"[background_audit_loop] 出错: {e}")
+        time.sleep(AUDIT_RETRY_INTERVAL)
+
+
 def start_background_workers():
-    """Start both periodic jobs for the single-process development server."""
+    """巡检、历史清理、审计重试三个后台线程。生产用 gunicorn 时由 gunicorn.conf.py 在 worker 里调。"""
     t = threading.Thread(target=background_alert_loop, daemon=True)
     t.start()
     t2 = threading.Thread(target=background_metrics_prune_loop, daemon=True)
     t2.start()
+    threading.Thread(target=background_audit_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ SSH 到目标机器：同步 agent 代码、建虚拟环境装依赖、写 agent
 不是绝对安全（理论上第一次连接可能被中间人劫持），指纹会记进返回的 log 里，
 多疑的话可以自己去目标机器上核对。
 """
+import base64
 import os
 import socket
 import time
@@ -26,19 +27,28 @@ class AgentDeployError(Exception):
     """部署失败，message 可以直接原样展示给前端。"""
 
 
-def deploy_agent(ip, port, ssh_user, password, report_url, shared_secret, log=None, panel_name_override=None):
+def deploy_agent(ip, port, ssh_user, password, report_url, shared_secret, log=None, panel_name_override=None,
+                 pinned_host_key=None):
     """
     返回部署成功后使用的 panel_name（默认取自目标机器的 hostname，除非传了 panel_name_override）。
     失败抛 AgentDeployError。
 
     panel_name_override：重新部署时传上次用的 panel_name，让这台机器的名字不随 hostname 变。
+    pinned_host_key：(类型, base64)，这台机器在网页终端清单里钉过主机指纹时传进来：对不上就在发送
+    密码之前断开。没钉过的机器（第一次装）只能先信任第一次见到的指纹，并把它打印出来。
     """
     def emit(line):
         if log:
             log(line)
 
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    if pinned_host_key:
+        key_type, key_b64 = pinned_host_key
+        ssh.get_host_keys().add(ip if port == 22 else f"[{ip}]:{port}", key_type,
+                                paramiko.PKey.from_type_string(key_type, base64.b64decode(key_b64)))
+        ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+    else:
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
     emit(f"连接 {ssh_user}@{ip}:{port} ...")
     try:
@@ -49,6 +59,8 @@ def deploy_agent(ip, port, ssh_user, password, report_url, shared_secret, log=No
         )
     except paramiko.AuthenticationException:
         raise AgentDeployError("SSH 账号或密码不对")
+    except paramiko.BadHostKeyException:
+        raise AgentDeployError("主机指纹跟网页终端清单里钉的对不上，没有发送密码。先查清楚是不是机器重装过")
     except (socket.timeout, socket.error, paramiko.SSHException) as e:
         raise AgentDeployError(f"连接失败：{e}")
 

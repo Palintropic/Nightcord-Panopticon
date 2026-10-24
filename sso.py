@@ -130,8 +130,11 @@ class Provider:
 provider = Provider()
 
 
-def begin(settings):
-    """返回 (跳去 SSO 的地址, 要存进会话的 pending)。state / nonce / PKCE verifier 都在 pending 里。"""
+def begin(settings, extra=None):
+    """
+    返回 (跳去 SSO 的地址, 要存进会话的 pending)。state / nonce / PKCE verifier 都在 pending 里。
+    extra：额外的授权参数，比如开终端前要求重新验证的 prompt=login、max_age。
+    """
     doc = provider.discovery(settings["issuer"])
     verifier = _b64url(secrets.token_bytes(32))
     pending = {
@@ -149,8 +152,13 @@ def begin(settings):
         "nonce": pending["nonce"],
         "code_challenge": _b64url(hashlib.sha256(verifier.encode("ascii")).digest()),
         "code_challenge_method": "S256",
+        **(extra or {}),
     }
     return f"{doc['authorization_endpoint']}?{urlencode(params)}", pending
+
+
+def _strings(value):
+    return [x for x in value if isinstance(x, str)] if isinstance(value, list) else []
 
 
 def _role_from(roles):
@@ -163,7 +171,8 @@ def _role_from(roles):
 
 def finish(settings, pending, args):
     """
-    处理 SSO 回调。args 是回调的查询参数。成功返回 {sub, name, email, role, id_token}，
+    处理 SSO 回调。args 是回调的查询参数。成功返回 {sub, name, email, role, id_token, amr, auth_time,
+    ssh_hosts}（后三样开终端前的重新验证要用），
     其余情况抛 SsoError：
       cancelled —— SSO 那边报了错（用户拒绝、取消等）
       expired   —— 没有对应的 pending、state 对不上或者等太久了
@@ -219,12 +228,16 @@ def finish(settings, pending, args):
     role = _role_from(roles)
     if role is None:
         raise SsoError("denied", f"{claims.get('sub')} has no {APP} role")
+    auth_time = claims.get("auth_time")
     return {
         "sub": claims["sub"],
         "name": claims.get("name") if isinstance(claims.get("name"), str) else "",
         "email": claims.get("email") if isinstance(claims.get("email"), str) else "",
         "role": role,
         "id_token": id_token,
+        "amr": _strings(claims.get("amr")),
+        "auth_time": auth_time if isinstance(auth_time, int) and not isinstance(auth_time, bool) else None,
+        "ssh_hosts": _strings(claims.get("ssh_hosts")),
     }
 
 
