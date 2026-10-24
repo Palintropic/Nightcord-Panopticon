@@ -38,6 +38,8 @@
   .ov-switch select{width:auto}
   .ov-row{display:grid;grid-template-columns:148px minmax(0,1fr);gap:var(--gutter);margin-top:var(--gutter)}
   @container (max-width:640px){ .ov-row{grid-template-columns:minmax(0,1fr);gap:8px} .ov-row + .ov-row{margin-top:var(--group-gap)} }
+  /* Signed out: tiles only (no curves, no details), wrapped as a wall with the row gap. */
+  .ov-wall{display:flex;flex-wrap:wrap;gap:var(--gutter);margin-top:var(--gutter)}
   .tile{position:relative;display:block;width:148px;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
         -webkit-tap-highlight-color:transparent}
   .tile-inner{position:absolute;inset:0;overflow:hidden;padding:8px;background:var(--tile-bg);
@@ -419,6 +421,10 @@ function stateOf(p){
   return '';
 }
 function panels(){ return (lastData && lastData.panels) || []; }
+// Signed out, the server sends each card's state already worked out (/api/public/status), with no
+// numbers behind it; these read either shape.
+function cardState(p){ return publicView ? (p.state === 'ok' ? '' : p.state) : stateOf(p); }
+function cardOnline(p){ return publicView ? p.online : !isOffline(p); }
 
 // ---------- routing ----------
 // Top-level pivot items. 告警 / 终端 / 文件 are reserved for planned features and render a
@@ -451,12 +457,23 @@ const SETTINGS_PAGES = [
 // Who is signed in (/api/me). Settings are for superadmins only; until the answer is in, they
 // stay closed so a general admin never fires the settings requests the server would refuse.
 let me = null;
+// Not signed in: the first page only (machine names, online or not, rough state colour).
+let publicView = false;
 function isSuperadmin(){ return !!me && me.role === 'superadmin'; }
+// Anything short of a clear "signed in" shows the public page: a slow or failing /api/me must not
+// leave the page waiting, nor send it to the private status (which would bounce to the login page).
+// After a failure (not a plain 401) each refresh asks again, so a live session comes back by itself.
+let meUncertain = false;
 async function loadMe(){
+  const wasPublic = publicView;
   try{
-    const res = await fetch('/api/me');
-    if(res.ok) me = await res.json();
-  }catch(e){ return; }
+    const r = await fetchJsonWithTimeout('/api/me', 5000, undefined, true);
+    if(r.ok) me = r.data;
+    publicView = !r.ok;
+    meUncertain = !r.ok && r.status !== 401;
+  }catch(e){ publicView = true; meUncertain = true; }
+  if(wasPublic && !publicView){ lastData = null; loadKaomoji(); }
+  document.getElementById('logout').textContent = publicView ? '登录' : '退出登录';
   // A bookmarked #s=<page> only resolves now, so open it as freshly opened (its forms load).
   render(route().view === 'settings');
 }
@@ -464,6 +481,7 @@ async function loadMe(){
 // The session ran out (or was revoked): drop what is on screen and sign in again, back to the same
 // place. A Palintropic session goes straight back through SSO, which is silent while that is live.
 function signInAgain(){
+  if(publicView) return;
   lastData = null;
   document.getElementById('content').innerHTML = '';
   document.getElementById('settingsView').hidden = true;
@@ -475,6 +493,7 @@ function signInAgain(){
 
 // #p=<n> top-level pivot item, #m=<name> machine detail, #s=<key> settings page.
 function route(){
+  if(publicView) return {view:'list', pivot:0};
   const s = location.hash.match(/^#s=(\w+)$/);
   const key = s && (s[1] === 'appearance' ? 'theme' : s[1]);   // 外观 became 主题
   if(key && SETTINGS_PAGES.some(x => x.key === key) && isSuperadmin()) return {view:'settings', page:key};
@@ -556,7 +575,7 @@ function render(animate){
   } else {
     back.hidden = true;
     title.textContent = 'Panopticon';
-    headers.innerHTML = TOP_PIVOTS.map((pv, i) =>
+    headers.innerHTML = (publicView ? TOP_PIVOTS.slice(0, 1) : TOP_PIVOTS).map((pv, i) =>
       `<button class="pivot-header-item" role="tab" aria-selected="${i === r.pivot}" data-pivot="${i}">${pv.label}</button>`).join('');
     html = TOP_PIVOTS[r.pivot].render();
     if(r.pivot === SETTINGS_PIVOT && isSuperadmin() && window.panopticonSettings) window.panopticonSettings.ensureLoaded();
@@ -596,22 +615,24 @@ function renderStatusBar(){
   }
   const ps = panels();
   const machines = ps.filter(p => p.kind !== 'nightcord-status');
-  const online = machines.filter(p => !isOffline(p)).length;
-  const attention = ps.filter(p => stateOf(p) === 'warn').length;
+  const online = machines.filter(cardOnline).length;
+  const attention = ps.filter(p => cardState(p) === 'warn').length;
   alert.hidden = attention === 0;
   alert.textContent = `${attention} 需要关注`;
-  const caution = ps.filter(p => stateOf(p) === 'caution').length;
+  const caution = ps.filter(p => cardState(p) === 'caution').length;
   // Notes sit next to the count, which stays visible at phone width.
-  const notes = [...staleNotes(), remoteNote()].filter(Boolean);
+  // Signed out there is no time and no 2702 collection state to show, only refresh failures.
+  const notes = publicView ? (refreshFailed ? ['刷新失败'] : []) : [...staleNotes(), remoteNote()].filter(Boolean);
   summary.textContent = [`${online} / ${machines.length} 在线`, caution ? `${caution} 接近阈值` : '', ...notes].filter(Boolean).join(' · ');
   summary.title = summary.textContent;
-  updated.textContent = '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
+  updated.textContent = publicView ? '' : '更新于 ' + new Date((lastData.ts || Date.now()/1000)*1000).toLocaleTimeString();
 }
 
 function noData(){
   if(!lastData) return '<div class="empty-hint">加载中…</div>';
   if(lastData.error) return `<div class="empty-hint">${escapeHtml(lastData.error)}</div>`;
   if(!panels().length){
+    if(publicView) return `<div class="empty-hint">${lastData.pending ? '状态数据还没准备好，稍等一下。' : '还没有机器。'}</div>`;
     return lastData.remote_pending
       ? '<div class="empty-hint">正在采集 Nightcord-Status 的数据…</div>'
       : '<div class="empty-hint">还没有机器上报。去设置里部署青源 agent 吧。</div>';
@@ -638,13 +659,14 @@ function stat(value, label, cls){
 // Problem machines first: offline, then needs attention, then near a threshold; ties keep the
 // server's order.
 function overviewRank(p){
-  if(p.kind !== 'nightcord-status' && (isOffline(p) || noMetrics(p))) return 0;
-  return {warn:1, caution:2}[stateOf(p)] ?? 3;
+  if(p.kind !== 'nightcord-status' && (publicView ? p.nodata : isOffline(p) || noMetrics(p))) return 0;
+  return {warn:1, caution:2}[cardState(p)] ?? 3;
 }
 
 function overview(){
   const empty = noData();
   if(empty) return empty;
+  if(publicView) return `<div id="ovRows">${overviewRows()}</div>`;
   const options = OVERVIEW_METRICS.map(o =>
     `<option value="${o.key}"${o.key === overviewMetric ? ' selected' : ''}>${o.label}</option>`).join('');
   return `<div class="ov-switch"><select id="overviewMetric" aria-label="曲线显示">${options}</select></div>
@@ -653,6 +675,7 @@ function overview(){
 function overviewRows(){
   const ps = panels().map((p, i) => [p, i])
     .sort((a, b) => overviewRank(a[0]) - overviewRank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  if(publicView) return `<div class="ov-wall">${ps.map(publicTile).join('')}</div>`;
   return ps.map(p => `<div class="ov-row">${tile(p)}${trend(p)}</div>`).join('');
 }
 
@@ -830,6 +853,22 @@ function tile(p){
       <div class="tile-label"><span class="chara">${escapeHtml(chara)}</span><span class="name">${name}</span></div>
     </div>
   </a>`;
+}
+
+// Same tile from a /api/public/status card; not a link, as there is no detail to open.
+function publicTile(p){
+  const down = p.kind === 'nightcord-status' ? !p.online : p.nodata;
+  const state = cardState(p);
+  const look = p.kind !== 'nightcord-status' && p.nodata ? 'offline' : (state || 'ok');
+  const [chara, faces] = characterFor(p.name || '');
+  const face = faces[down || state === 'warn' ? 2 : state === 'caution' ? 1 : 0];
+  return `<div class="tile state-${look}">
+    <div class="tile-inner">
+      <div class="t-state">${down ? '离线' : '在线'}</div>
+      <div class="face">${escapeHtml(face)}</div>
+      <div class="tile-label"><span class="chara">${escapeHtml(chara)}</span><span class="name">${escapeHtml(p.name || '未命名')}</span></div>
+    </div>
+  </div>`;
 }
 
 // Press feedback (PointerDownThemeAnimation): sink 3 % and tilt up to 6° away from the finger (by eye).
@@ -1067,12 +1106,12 @@ window.addEventListener('hashchange', () => {
 let tileBatch = 0;
 // The timeout covers reading the body too: a response whose headers arrive but whose body never
 // finishes is aborted as well. Resolves to {ok, status, data}.
-async function fetchJsonWithTimeout(url, ms, controller){
+async function fetchJsonWithTimeout(url, ms, controller, quiet401){
   controller = controller || new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try{
     const res = await fetch(url, {signal:controller.signal});
-    if(res.status === 401) signInAgain();   // whichever request notices first clears the screen
+    if(res.status === 401 && !quiet401) signInAgain();   // whichever request notices first clears the screen
     const data = await res.json();
     return {ok:res.ok, status:res.status, data};
   }finally{
@@ -1098,12 +1137,15 @@ async function loadTileHistory(){
 // dashboard never rolls back to stale numbers.
 let statusSeq = 0;
 async function refresh(animate){
+  if(publicView && meUncertain) await loadMe();
   const seq = ++statusSeq;
   let data;
   try{
-    const r = await fetchJsonWithTimeout('/api/status', 10000);
+    const r = await fetchJsonWithTimeout(publicView ? '/api/public/status' : '/api/status', 10000);
     if(r.status === 401){ signInAgain(); return; }
     data = r.data;
+    // Signed out, the colour-and-face assignments come with the cards, for the visible machines only.
+    if(publicView && data.kaomoji) kaomojiConfig = {assign:data.kaomoji.assign || {}, faces:data.kaomoji.faces || {}};
   }catch(e){
     if(seq === statusSeq){ refreshFailed = true; renderStatusBar(); }
     return;
@@ -1121,7 +1163,7 @@ async function refresh(animate){
     render(animate);
   }
   // Tile charts arrive afterwards: a slow history request must not hold up the dashboard.
-  if(!lastData.error){
+  if(!lastData.error && !publicView){
     const landed = await loadTileHistory();
     if(seq !== statusSeq) return;
     const now = route();
@@ -1130,18 +1172,21 @@ async function refresh(animate){
 }
 document.getElementById('refresh').addEventListener('click', () => refresh(false));
 document.getElementById('logout').addEventListener('click', async () => {
+  if(publicView){ location.href = '/login'; return; }
   // Signed in through Palintropic: the answer names the SSO sign-out, which comes back to /login.
   const data = await fetch('/logout', {method:'POST'}).then(r => r.json()).catch(() => ({}));
   location.href = data.redirect || (data.sso_signed_out === false ? '/login?sso_error=logout' : '/login');
 });
 
-loadMe();
-loadKaomoji();
 loadAppearance();
 
 render(false);
-refresh(true);
-setInterval(() => refresh(false), REFRESH_MS);
+// Signed in or not decides which status to fetch, so that is known first.
+loadMe().then(() => {
+  if(!publicView) loadKaomoji();
+  refresh(true);
+  setInterval(() => refresh(false), REFRESH_MS);
+});
 </script>
 <script src="/static/settings.js"></script>
 </body>

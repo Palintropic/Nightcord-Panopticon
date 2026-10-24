@@ -60,7 +60,9 @@ _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实�
 # setup_page / settings_page 只回一段固定的转发脚本（见 _SETTINGS_FORWARD），不带任何数据；放行是为了
 # 让旧书签的 #s=... 先在浏览器里转成看板地址，没登录的话再由看板被踢去登录页，# 后面那段一路带着。
 PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify",
-                    "setup_page", "settings_page", "sso_login", "sso_callback", "api_login_methods"}
+                    "setup_page", "settings_page", "sso_login", "sso_callback", "api_login_methods",
+                    # 没登录也能看的第一面：看板页本身、只有名字和状态色的 Status（颜文字随它一起给）、磁贴的颜色
+                    "index", "api_public_status", "api_get_appearance"}
 
 # 登录后分两档（见 sso.py）：超级管理员什么都能做；一般管理员只能看——下面这些是一般管理员能进的，
 # 其余（设置、密钥、部署 / 移除 agent、移除机器、本地 Passkey 管理）一律只给超管。
@@ -696,22 +698,102 @@ def api_status():
         cfg = load_config()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
+    return jsonify({**_status_snapshot(cfg), "thresholds": _thresholds()})
+
+
+def _status_snapshot(cfg, max_age=CACHE_TTL):
     has_remote = bool((cfg.get("nightcord_status") or {}).get("enabled")) and not _nightcord_push_mode(cfg)
     now = time.time()
     with _remote_lock:
         remote, remote_ts, remote_fp = _remote["data"], _remote["ts"], _remote["fp"]
     if remote is not None and remote_fp != _remote_fingerprint(cfg):
         remote = None  # 缓存是按改之前的配置采的（可能是别的进程改的配置）
-    if remote is None or now - remote_ts >= CACHE_TTL:
+    if remote is None or now - remote_ts >= max_age:
         _refresh_remote_async()
-    return jsonify({
+    return {
         "panels": _with_qingyuan(remote or []),
         "ts": now,
         # 远程数据源（拉取模式的 Nightcord-Status）那部分的采集完成时间；前端据此提示数据是否陈旧
         "remote_ts": remote_ts if remote is not None and has_remote else None,
         "remote_pending": remote is None and has_remote,
-        "thresholds": _thresholds(),
-    })
+    }
+
+
+# 没登录时看到的第一面（Status）：只有机器名、在线与否和粗略的状态色。状态在服务器上算好再给，
+# 数字、IP、挂载点、离线原因原文、2702 的各个检测目标都不出门。
+# 判定跟 static/index.html 的 stateOf / noMetrics 一致，改一边要同步另一边。
+PUBLIC_CAUTION_PERCENT = 70  # 即 index.html 的 CAUTION_BAND
+
+
+def _level(value, threshold):
+    if value is None:
+        return ""
+    if value >= threshold:
+        return "warn"
+    if value >= PUBLIC_CAUTION_PERCENT:
+        return "caution"
+    return ""
+
+
+def _public_card(p, th):
+    """state：ok / caution / warn；nodata：机器离线或者一个数都没报（磁贴灰掉）。"""
+    if p.get("kind") == "nightcord-status":
+        online = p.get("online") is not False
+        statuses = {t.get("status") for t in p.get("targets") or [] if isinstance(t, dict)}
+        state = ("warn" if not online or "down" in statuses
+                 else "caution" if statuses & {"degraded", "unknown"} else "ok")
+        return {"name": p.get("name") or "", "kind": "nightcord-status", "online": online,
+                "state": state, "nodata": False}
+    q = p.get("qingyuan") or {}
+    online = p.get("online") is not False and q.get("online") is not False
+    percents = [d.get("percent") for d in q.get("disk_detail") or []
+                if isinstance(d, dict) and isinstance(d.get("percent"), (int, float))]
+    values = {"cpu": q.get("cpu"), "mem": q.get("mem"), "disk": max(percents) if percents else q.get("disk")}
+    levels = {_level(values[k], th[k]) for k in values}
+    state = "warn" if not online or "warn" in levels else "caution" if "caution" in levels else "ok"
+    return {"name": p.get("name") or "", "kind": "qingyuan", "online": online, "state": state,
+            "nodata": not online or all(v is None for v in values.values())}
+
+
+# 匿名请求谁都能发，不能拿它驱动采集或者每次都扫一遍数据库：整个结果缓存几秒；拉取模式的远程数据
+# 缺了或者超过一分钟才让它刷新一次（同一时间只跑一个），匿名流量最多每分钟带出一次采集，跟后台巡检
+# 同一个量级。不能完全不刷新：远程缓存在进程内存里，多 worker 部署时巡检进程采到的结果别的进程看不到。
+PUBLIC_CACHE_SECONDS = 5
+PUBLIC_REMOTE_MAX_AGE = 60
+_public_cache = {"at": 0.0, "body": None}
+_public_lock = threading.Lock()
+
+
+def _public_kaomoji(cfg, names):
+    """只给看得到的这些机器的颜文字分配，以及它们用到的角色的表情；移除了的机器、没用上的角色都不给。"""
+    k = kaomoji_of(cfg)
+    assign = {m: c for m, c in k["assign"].items() if m in names}
+    return {"assign": assign, "faces": {c: f for c, f in k["faces"].items() if c in assign.values()}}
+
+
+@app.route("/api/public/status")
+def api_public_status():
+    now = time.time()
+    with _public_lock:
+        if _public_cache["body"] is not None and now - _public_cache["at"] < PUBLIC_CACHE_SECONDS:
+            return jsonify(_public_cache["body"])
+    # 锁外重算：读配置和数据库慢的时候，别的匿名请求不用排队等它（过期那一刻可能有几个一起算，无妨）
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        return jsonify({"error": "看板还没配置好"}), 400
+    snapshot = _status_snapshot(cfg, max_age=PUBLIC_REMOTE_MAX_AGE)
+    th = _thresholds()
+    cards = [_public_card(p, th) for p in snapshot["panels"]]
+    body = {
+        "panels": cards,
+        "kaomoji": _public_kaomoji(cfg, {c["name"] for c in cards}),
+        # 还有数据没到（拉取模式第一次采集中）：前端说「还没准备好」，而不是「还没有机器」
+        "pending": snapshot["remote_pending"],
+    }
+    with _public_lock:
+        _public_cache.update(at=now, body=body)
+    return jsonify(body)
 
 
 def _number(value, low, high, cast=float):

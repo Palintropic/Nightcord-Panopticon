@@ -129,7 +129,10 @@ dashboard_auth:
   lockout_seconds: 900   # lockout duration in seconds, default 15 minutes
 ```
 
-Behavior: no/invalid credentials → redirected to `/login` (or `401` for API calls). Once one IP
+Behavior: signed out, the home page shows only the first Status page — machine names, online or not,
+and a rough state colour (from `/api/public/status`, worked out on the server, with no numbers, IPs,
+mount points, error text or history) — with no way into details and a 登录 button; other pages
+redirect to `/login` and other API calls get `401`. Once one IP
 accumulates `max_attempts` failures, every subsequent request from it — even with the correct
 password — gets a `429` until the lockout window passes. Lockout state lives in memory and resets
 when the dashboard restarts. Passkeys are registered from Settings → 登录 (Login) after your first

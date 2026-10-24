@@ -36,6 +36,29 @@ class DashboardStatusBarTests(unittest.TestCase):
         self.assertEqual(routes["#s=panels"], {"view": "list", "pivot": 5})
         self.assertEqual(routes["#s=bogus"], {"view": "list", "pivot": 5})
 
+    def test_signed_out_sees_tiles_only(self):
+        self.assertEqual(self.steps["publicRoute"], {"view": "list", "pivot": 0})
+        html = self.steps["publicOverview"]
+        self.assertIn('ov-wall', html)
+        self.assertNotIn('href=', html)            # nothing to open
+        self.assertNotIn('ov-switch', html)        # no metric curves
+        self.assertIn('state-offline', html)       # gone is grey
+        self.assertIn('state-caution', html)
+        self.assertLess(html.index('gone'), html.index('tokyo'))   # problems first
+        self.assertIn("1 / 2 在线", self.steps["publicSummary"])
+        self.assertIn("1 接近阈值", self.steps["publicSummary"])
+        self.assertEqual(self.steps["publicButton"], "登录")
+        self.assertEqual(self.steps["publicUpdated"], "")           # no times signed out
+        self.assertIn("PUBLIC-NEAR", html)                          # faces come with the cards
+
+    def test_a_failing_me_shows_the_public_page_instead_of_bouncing(self):
+        self.assertEqual(self.steps["meFails_network"], {"view": "list", "pivot": 0})
+        self.assertEqual(self.steps["meFails_broken"], {"view": "list", "pivot": 0})
+        self.assertEqual(self.steps["publicRedirect"], self.steps["afterExpiry"])   # no new redirect
+
+    def test_after_a_failed_me_the_next_refresh_restores_the_signed_in_view(self):
+        self.assertEqual(self.steps["meRecovered"], {"view": "settings", "page": "notify"})
+
     def test_expired_session_goes_back_to_sign_in_at_the_same_place(self):
         self.assertEqual(self.steps["afterExpiry"], "/login#p=1")
 
