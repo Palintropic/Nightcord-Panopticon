@@ -60,7 +60,9 @@ _brute_force_guard = BruteForceGuard()  # 默认 5 次失败锁 15 分钟，实�
 # setup_page / settings_page 只回一段固定的转发脚本（见 _SETTINGS_FORWARD），不带任何数据；放行是为了
 # 让旧书签的 #s=... 先在浏览器里转成看板地址，没登录的话再由看板被踢去登录页，# 后面那段一路带着。
 PUBLIC_ENDPOINTS = {"login_page", "login_password", "logout", "webauthn_login_options", "webauthn_login_verify",
-                    "setup_page", "settings_page", "sso_login", "sso_callback", "api_login_methods"}
+                    "setup_page", "settings_page", "sso_login", "sso_callback", "api_login_methods",
+                    # 没登录也能看的第一面：看板页本身、只有名字和状态色的 Status、磁贴的颜色和颜文字
+                    "index", "api_public_status", "api_get_appearance", "api_get_kaomoji"}
 
 # 登录后分两档（见 sso.py）：超级管理员什么都能做；一般管理员只能看——下面这些是一般管理员能进的，
 # 其余（设置、密钥、部署 / 移除 agent、移除机器、本地 Passkey 管理）一律只给超管。
@@ -696,6 +698,10 @@ def api_status():
         cfg = load_config()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
+    return jsonify({**_status_snapshot(cfg), "thresholds": _thresholds()})
+
+
+def _status_snapshot(cfg):
     has_remote = bool((cfg.get("nightcord_status") or {}).get("enabled")) and not _nightcord_push_mode(cfg)
     now = time.time()
     with _remote_lock:
@@ -704,13 +710,63 @@ def api_status():
         remote = None  # 缓存是按改之前的配置采的（可能是别的进程改的配置）
     if remote is None or now - remote_ts >= CACHE_TTL:
         _refresh_remote_async()
-    return jsonify({
+    return {
         "panels": _with_qingyuan(remote or []),
         "ts": now,
         # 远程数据源（拉取模式的 Nightcord-Status）那部分的采集完成时间；前端据此提示数据是否陈旧
         "remote_ts": remote_ts if remote is not None and has_remote else None,
         "remote_pending": remote is None and has_remote,
-        "thresholds": _thresholds(),
+    }
+
+
+# 没登录时看到的第一面（Status）：只有机器名、在线与否和粗略的状态色。状态在服务器上算好再给，
+# 数字、IP、挂载点、离线原因原文、2702 的各个检测目标都不出门。
+# 判定跟 static/index.html 的 stateOf / noMetrics 一致，改一边要同步另一边。
+PUBLIC_CAUTION_PERCENT = 70  # 即 index.html 的 CAUTION_BAND
+
+
+def _level(value, threshold):
+    if value is None:
+        return ""
+    if value >= threshold:
+        return "warn"
+    if value >= PUBLIC_CAUTION_PERCENT:
+        return "caution"
+    return ""
+
+
+def _public_card(p, th):
+    """state：ok / caution / warn；nodata：机器离线或者一个数都没报（磁贴灰掉）。"""
+    if p.get("kind") == "nightcord-status":
+        online = p.get("online") is not False
+        statuses = {t.get("status") for t in p.get("targets") or [] if isinstance(t, dict)}
+        state = ("warn" if not online or "down" in statuses
+                 else "caution" if statuses & {"degraded", "unknown"} else "ok")
+        return {"name": p.get("name") or "", "kind": "nightcord-status", "online": online,
+                "state": state, "nodata": False}
+    q = p.get("qingyuan") or {}
+    online = p.get("online") is not False and q.get("online") is not False
+    percents = [d.get("percent") for d in q.get("disk_detail") or []
+                if isinstance(d, dict) and isinstance(d.get("percent"), (int, float))]
+    values = {"cpu": q.get("cpu"), "mem": q.get("mem"), "disk": max(percents) if percents else q.get("disk")}
+    levels = {_level(values[k], th[k]) for k in values}
+    state = "warn" if not online or "warn" in levels else "caution" if "caution" in levels else "ok"
+    return {"name": p.get("name") or "", "kind": "qingyuan", "online": online, "state": state,
+            "nodata": not online or all(v is None for v in values.values())}
+
+
+@app.route("/api/public/status")
+def api_public_status():
+    try:
+        cfg = load_config()
+    except RuntimeError:
+        return jsonify({"error": "看板还没配置好"}), 400
+    snapshot = _status_snapshot(cfg)
+    th = _thresholds()
+    return jsonify({
+        "panels": [_public_card(p, th) for p in snapshot["panels"]],
+        "ts": snapshot["ts"],
+        "remote_pending": snapshot["remote_pending"],
     })
 
 

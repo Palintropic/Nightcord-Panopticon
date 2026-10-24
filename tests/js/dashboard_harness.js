@@ -38,10 +38,11 @@ const window = {
 };
 
 const responses = [];   // queue of {data} or {fail: true}
-let role = 'superadmin';   // what /api/me answers
+let role = 'superadmin';   // what /api/me answers; null = signed out (401)
 function fetch(url){
-  if(url === '/api/me') return Promise.resolve({ok: true, status: 200, json: async () => ({role})});
-  if(!url.startsWith('/api/status')) return Promise.resolve({ok: true, status: 200, json: async () => ({samples: []})});
+  if(url === '/api/me') return Promise.resolve(role ? {ok: true, status: 200, json: async () => ({role})}
+                                                    : {ok: false, status: 401, json: async () => ({error: '未登录'})});
+  if(!url.startsWith('/api/status') && !url.startsWith('/api/public/status')) return Promise.resolve({ok: true, status: 200, json: async () => ({samples: []})});
   const next = responses.shift() || {fail: true};
   if(next.fail) return Promise.reject(new Error('network down'));
   if(next.status) return Promise.resolve({ok: false, status: next.status, json: async () => ({error: '未登录'})});
@@ -49,7 +50,7 @@ function fetch(url){
 }
 
 const api = new Function('document', 'window', 'location', 'fetch', 'setInterval',
-  script + '; return {refresh, machinesView, overviewItem, panels, route, loadMe};')(document, window, location, fetch, () => 0);
+  script + '; return {refresh, machinesView, overviewItem, overview, panels, route, loadMe};')(document, window, location, fetch, () => 0);
 
 const tick = () => new Promise(r => setTimeout(r, 0));
 const summary = () => document.getElementById('statusSummary').textContent;
@@ -59,6 +60,7 @@ const summary = () => document.getElementById('statusSummary').textContent;
   const status = ts => ({ts, panels: [{name: 'qy', kind: 'qingyuan', online: true,
     qingyuan: {online: true, cpu: 5, mem: 5, disk: 5, seen_at: ts}}], thresholds: {cpu: 90, mem: 90, disk: 85}});
   const out = {};
+  await tick();   // the page's own first refresh waits for /api/me; let it go by on an empty queue
 
   responses.push({data: status(now)});
   await api.refresh(true); await tick();
@@ -105,6 +107,19 @@ const summary = () => document.getElementById('statusSummary').textContent;
   responses.push({status: 401});
   await api.refresh(false); await tick();
   out.afterExpiry = location.replaced;
+
+  role = null;
+  await api.loadMe();
+  location._hash = '#s=notify';
+  out.publicRoute = api.route();
+  responses.push({data: {ts: Date.now() / 1000, panels: [
+    {name: 'tokyo', kind: 'qingyuan', online: true, state: 'caution', nodata: false},
+    {name: 'gone', kind: 'qingyuan', online: false, state: 'warn', nodata: true},
+    {name: 'Nightcord-Status', kind: 'nightcord-status', online: true, state: 'ok', nodata: false}]}});
+  await api.refresh(false); await tick();
+  out.publicSummary = summary();
+  out.publicOverview = api.overview();
+  out.publicButton = document.getElementById('logout').textContent;
 
   process.stdout.write(JSON.stringify(out));
 })();

@@ -113,8 +113,12 @@ class AppearanceApiTests(unittest.TestCase):
         with open(self.path, "w", encoding="utf-8") as f:
             yaml.safe_dump({"dashboard_auth": {"enabled": True, "password_hash": "x"}}, f)
         self.assertEqual(self.client.get("/settings").status_code, 200)
-        self.assertEqual(self.client.get("/api/appearance").status_code, 401)
-        self.assertEqual(self.client.get("/").status_code, 302)
+        # The dashboard page and its colours are public (signed out it shows the first page only);
+        # settings and changing the colours still need signing in.
+        self.assertEqual(self.client.get("/").status_code, 200)
+        self.assertEqual(self.client.get("/api/appearance").status_code, 200)
+        self.assertEqual(self.client.post("/api/appearance", json={}).status_code, 401)
+        self.assertEqual(self.client.get("/api/config").status_code, 401)
 
     @unittest.skipUnless(shutil.which("node"), "needs node to run the login page script")
     def test_login_returns_to_dashboard_addresses_only(self):

@@ -36,6 +36,19 @@ class DashboardStatusBarTests(unittest.TestCase):
         self.assertEqual(routes["#s=panels"], {"view": "list", "pivot": 5})
         self.assertEqual(routes["#s=bogus"], {"view": "list", "pivot": 5})
 
+    def test_signed_out_sees_tiles_only(self):
+        self.assertEqual(self.steps["publicRoute"], {"view": "list", "pivot": 0})
+        html = self.steps["publicOverview"]
+        self.assertIn('ov-wall', html)
+        self.assertNotIn('href=', html)            # nothing to open
+        self.assertNotIn('ov-switch', html)        # no metric curves
+        self.assertIn('state-offline', html)       # gone is grey
+        self.assertIn('state-caution', html)
+        self.assertLess(html.index('gone'), html.index('tokyo'))   # problems first
+        self.assertIn("1 / 2 在线", self.steps["publicSummary"])
+        self.assertIn("1 接近阈值", self.steps["publicSummary"])
+        self.assertEqual(self.steps["publicButton"], "登录")
+
     def test_expired_session_goes_back_to_sign_in_at_the_same_place(self):
         self.assertEqual(self.steps["afterExpiry"], "/login#p=1")
 

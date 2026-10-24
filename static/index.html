@@ -38,6 +38,8 @@
   .ov-switch select{width:auto}
   .ov-row{display:grid;grid-template-columns:148px minmax(0,1fr);gap:var(--gutter);margin-top:var(--gutter)}
   @container (max-width:640px){ .ov-row{grid-template-columns:minmax(0,1fr);gap:8px} .ov-row + .ov-row{margin-top:var(--group-gap)} }
+  /* Signed out: tiles only (no curves, no details), wrapped as a wall with the row gap. */
+  .ov-wall{display:flex;flex-wrap:wrap;gap:var(--gutter);margin-top:var(--gutter)}
   .tile{position:relative;display:block;width:148px;height:148px;color:#ffffff;text-decoration:none;perspective:600px;
         -webkit-tap-highlight-color:transparent}
   .tile-inner{position:absolute;inset:0;overflow:hidden;padding:8px;background:var(--tile-bg);
@@ -419,6 +421,10 @@ function stateOf(p){
   return '';
 }
 function panels(){ return (lastData && lastData.panels) || []; }
+// Signed out, the server sends each card's state already worked out (/api/public/status), with no
+// numbers behind it; these read either shape.
+function cardState(p){ return publicView ? (p.state === 'ok' ? '' : p.state) : stateOf(p); }
+function cardOnline(p){ return publicView ? p.online : !isOffline(p); }
 
 // ---------- routing ----------
 // Top-level pivot items. 告警 / 终端 / 文件 are reserved for planned features and render a
@@ -451,12 +457,16 @@ const SETTINGS_PAGES = [
 // Who is signed in (/api/me). Settings are for superadmins only; until the answer is in, they
 // stay closed so a general admin never fires the settings requests the server would refuse.
 let me = null;
+// Not signed in: the first page only (machine names, online or not, rough state colour).
+let publicView = false;
 function isSuperadmin(){ return !!me && me.role === 'superadmin'; }
 async function loadMe(){
   try{
     const res = await fetch('/api/me');
     if(res.ok) me = await res.json();
+    publicView = res.status === 401;
   }catch(e){ return; }
+  document.getElementById('logout').textContent = publicView ? '登录' : '退出登录';
   // A bookmarked #s=<page> only resolves now, so open it as freshly opened (its forms load).
   render(route().view === 'settings');
 }
@@ -475,6 +485,7 @@ function signInAgain(){
 
 // #p=<n> top-level pivot item, #m=<name> machine detail, #s=<key> settings page.
 function route(){
+  if(publicView) return {view:'list', pivot:0};
   const s = location.hash.match(/^#s=(\w+)$/);
   const key = s && (s[1] === 'appearance' ? 'theme' : s[1]);   // 外观 became 主题
   if(key && SETTINGS_PAGES.some(x => x.key === key) && isSuperadmin()) return {view:'settings', page:key};
@@ -556,7 +567,7 @@ function render(animate){
   } else {
     back.hidden = true;
     title.textContent = 'Panopticon';
-    headers.innerHTML = TOP_PIVOTS.map((pv, i) =>
+    headers.innerHTML = (publicView ? TOP_PIVOTS.slice(0, 1) : TOP_PIVOTS).map((pv, i) =>
       `<button class="pivot-header-item" role="tab" aria-selected="${i === r.pivot}" data-pivot="${i}">${pv.label}</button>`).join('');
     html = TOP_PIVOTS[r.pivot].render();
     if(r.pivot === SETTINGS_PIVOT && isSuperadmin() && window.panopticonSettings) window.panopticonSettings.ensureLoaded();
@@ -596,11 +607,11 @@ function renderStatusBar(){
   }
   const ps = panels();
   const machines = ps.filter(p => p.kind !== 'nightcord-status');
-  const online = machines.filter(p => !isOffline(p)).length;
-  const attention = ps.filter(p => stateOf(p) === 'warn').length;
+  const online = machines.filter(cardOnline).length;
+  const attention = ps.filter(p => cardState(p) === 'warn').length;
   alert.hidden = attention === 0;
   alert.textContent = `${attention} 需要关注`;
-  const caution = ps.filter(p => stateOf(p) === 'caution').length;
+  const caution = ps.filter(p => cardState(p) === 'caution').length;
   // Notes sit next to the count, which stays visible at phone width.
   const notes = [...staleNotes(), remoteNote()].filter(Boolean);
   summary.textContent = [`${online} / ${machines.length} 在线`, caution ? `${caution} 接近阈值` : '', ...notes].filter(Boolean).join(' · ');
@@ -614,7 +625,7 @@ function noData(){
   if(!panels().length){
     return lastData.remote_pending
       ? '<div class="empty-hint">正在采集 Nightcord-Status 的数据…</div>'
-      : '<div class="empty-hint">还没有机器上报。去设置里部署青源 agent 吧。</div>';
+      : `<div class="empty-hint">${publicView ? '还没有机器。' : '还没有机器上报。去设置里部署青源 agent 吧。'}</div>`;
   }
   return '';
 }
@@ -638,13 +649,14 @@ function stat(value, label, cls){
 // Problem machines first: offline, then needs attention, then near a threshold; ties keep the
 // server's order.
 function overviewRank(p){
-  if(p.kind !== 'nightcord-status' && (isOffline(p) || noMetrics(p))) return 0;
-  return {warn:1, caution:2}[stateOf(p)] ?? 3;
+  if(p.kind !== 'nightcord-status' && (publicView ? p.nodata : isOffline(p) || noMetrics(p))) return 0;
+  return {warn:1, caution:2}[cardState(p)] ?? 3;
 }
 
 function overview(){
   const empty = noData();
   if(empty) return empty;
+  if(publicView) return `<div id="ovRows">${overviewRows()}</div>`;
   const options = OVERVIEW_METRICS.map(o =>
     `<option value="${o.key}"${o.key === overviewMetric ? ' selected' : ''}>${o.label}</option>`).join('');
   return `<div class="ov-switch"><select id="overviewMetric" aria-label="曲线显示">${options}</select></div>
@@ -653,6 +665,7 @@ function overview(){
 function overviewRows(){
   const ps = panels().map((p, i) => [p, i])
     .sort((a, b) => overviewRank(a[0]) - overviewRank(b[0]) || a[1] - b[1]).map(x => x[0]);
+  if(publicView) return `<div class="ov-wall">${ps.map(publicTile).join('')}</div>`;
   return ps.map(p => `<div class="ov-row">${tile(p)}${trend(p)}</div>`).join('');
 }
 
@@ -830,6 +843,22 @@ function tile(p){
       <div class="tile-label"><span class="chara">${escapeHtml(chara)}</span><span class="name">${name}</span></div>
     </div>
   </a>`;
+}
+
+// Same tile from a /api/public/status card; not a link, as there is no detail to open.
+function publicTile(p){
+  const down = p.kind === 'nightcord-status' ? !p.online : p.nodata;
+  const state = cardState(p);
+  const look = p.kind !== 'nightcord-status' && p.nodata ? 'offline' : (state || 'ok');
+  const [chara, faces] = characterFor(p.name || '');
+  const face = faces[down || state === 'warn' ? 2 : state === 'caution' ? 1 : 0];
+  return `<div class="tile state-${look}">
+    <div class="tile-inner">
+      <div class="t-state">${down ? '离线' : '在线'}</div>
+      <div class="face">${escapeHtml(face)}</div>
+      <div class="tile-label"><span class="chara">${escapeHtml(chara)}</span><span class="name">${escapeHtml(p.name || '未命名')}</span></div>
+    </div>
+  </div>`;
 }
 
 // Press feedback (PointerDownThemeAnimation): sink 3 % and tilt up to 6° away from the finger (by eye).
@@ -1101,7 +1130,7 @@ async function refresh(animate){
   const seq = ++statusSeq;
   let data;
   try{
-    const r = await fetchJsonWithTimeout('/api/status', 10000);
+    const r = await fetchJsonWithTimeout(publicView ? '/api/public/status' : '/api/status', 10000);
     if(r.status === 401){ signInAgain(); return; }
     data = r.data;
   }catch(e){
@@ -1121,7 +1150,7 @@ async function refresh(animate){
     render(animate);
   }
   // Tile charts arrive afterwards: a slow history request must not hold up the dashboard.
-  if(!lastData.error){
+  if(!lastData.error && !publicView){
     const landed = await loadTileHistory();
     if(seq !== statusSeq) return;
     const now = route();
@@ -1130,18 +1159,21 @@ async function refresh(animate){
 }
 document.getElementById('refresh').addEventListener('click', () => refresh(false));
 document.getElementById('logout').addEventListener('click', async () => {
+  if(publicView){ location.href = '/login'; return; }
   // Signed in through Palintropic: the answer names the SSO sign-out, which comes back to /login.
   const data = await fetch('/logout', {method:'POST'}).then(r => r.json()).catch(() => ({}));
   location.href = data.redirect || (data.sso_signed_out === false ? '/login?sso_error=logout' : '/login');
 });
 
-loadMe();
 loadKaomoji();
 loadAppearance();
 
 render(false);
-refresh(true);
-setInterval(() => refresh(false), REFRESH_MS);
+// Signed in or not decides which status to fetch, so that is known first.
+loadMe().then(() => {
+  refresh(true);
+  setInterval(() => refresh(false), REFRESH_MS);
+});
 </script>
 <script src="/static/settings.js"></script>
 </body>
